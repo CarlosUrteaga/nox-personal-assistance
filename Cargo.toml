@@ -1,0 +1,24 @@
+[package]
+name = "nox-personal-assistance"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+google-generative-ai-rs = "0.3"
+dotenv = "0.15"
+log = "0.4"
+pretty_env_logger = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+teloxide = { version = "0.13", default-features = false, features = [
+    "macros",
+    "native-tls",
+] }
+
+reqwest = { version = "0.11", default-features = false, features = [
+    "json",
+    "multipart",
+    "native-tls",
+] }

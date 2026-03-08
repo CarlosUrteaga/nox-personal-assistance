@@ -1,0 +1,6 @@
+# .geminiignore
+.env
+.env.*
+*.pem
+*.key
+secrets/
