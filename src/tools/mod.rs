@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-pub mod gmail;
 pub mod calendar;
-pub mod gemini; // Export the shared helper
+pub mod gemini;
+pub mod gmail;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ToolResponse {
