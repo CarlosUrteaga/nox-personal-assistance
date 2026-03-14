@@ -14,7 +14,8 @@ pub fn run_gemini_command(prompt: &str) -> Result<Option<String>, String> {
         .map_err(|e| e.to_string())?;
 
     if !output.status.success() {
-        return Err("Gemini CLI command failed.".to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Gemini CLI command failed: {}", stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -46,8 +46,8 @@ async fn main() {
                     },
                     Err(e) => {
                         log::error!("Heartbeat Agent Error: {}", e);
-                        // Optionally notify user of error
-                        // channel_clone.send_message(&format!("⚠️ Error: {}", e)).await;
+                        // Notify user of error
+                        let _ = channel_clone.send_message(&format!("⚠️ Error: {}", e)).await;
                     }
                 }
             }
