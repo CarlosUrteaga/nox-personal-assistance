@@ -1,0 +1,12 @@
+{
+  "next_id": 1,
+  "items": [
+    {
+      "id": 1,
+      "content": "buy milk",
+      "completed": true,
+      "created_at_epoch_secs": 1773507249,
+      "completed_at_epoch_secs": 1773509198
+    }
+  ]
+}

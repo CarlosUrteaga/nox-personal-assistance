@@ -1,16 +1,23 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct OllamaClient {
     base_url: String,
     model: String,
+    num_predict: u32,
     client: Client,
 }
 
 impl OllamaClient {
-    pub fn new(base_url: String, model: String, timeout_secs: u64) -> Result<Self, String> {
+    pub fn new(
+        base_url: String,
+        model: String,
+        timeout_secs: u64,
+        num_predict: u32,
+    ) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
@@ -19,34 +26,47 @@ impl OllamaClient {
         Ok(Self {
             base_url,
             model,
+            num_predict,
             client,
         })
     }
 
-    pub async fn summarize_workspace_result(
+    pub async fn chat(
         &self,
-        task_kind: &str,
-        raw_payload: &str,
+        system_prompt: &str,
+        history: &[ConversationMessage],
+        user_message: &str,
     ) -> Result<String, String> {
-        let prompt = format!(
-            "You are formatting operational output for a personal assistant heartbeat. \
-Task: {}. \
-Return one concise end-user message in plain text. \
-Do not mention internal tools or JSON parsing. \
-If input indicates no action, answer with: No updates. \
-Input: {}",
-            task_kind, raw_payload
+        log::info!(
+            "Sending Ollama chat request: model={}, history_messages={}, user_message_len={}, num_predict={}",
+            self.model,
+            history.len(),
+            user_message.len(),
+            self.num_predict
         );
+        let started_at = Instant::now();
+
+        let mut messages = Vec::with_capacity(history.len() + 2);
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: system_prompt.to_string(),
+        });
+        messages.extend(history.iter().map(|message| ChatMessage {
+            role: message.role.as_ollama_role().to_string(),
+            content: message.content.clone(),
+        }));
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: user_message.to_string(),
+        });
 
         let request = OllamaChatRequest {
             model: self.model.clone(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            }],
+            messages,
             stream: false,
             options: Some(ChatOptions {
-                temperature: Some(0.0),
+                temperature: Some(0.2),
+                num_predict: Some(self.num_predict),
             }),
         };
 
@@ -60,7 +80,13 @@ Input: {}",
             .map_err(|e| format!("Ollama request failed: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(format!("Ollama returned HTTP {}", response.status()));
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unavailable response body>".to_string());
+            log::error!("Ollama error response: status={}, body={}", status, body);
+            return Err(format!("Ollama returned HTTP {}: {}", status, body));
         }
 
         let body: OllamaChatResponse = response
@@ -70,11 +96,39 @@ Input: {}",
 
         let content = body.message.content.trim().to_string();
         if content.is_empty() {
+            log::error!("Ollama returned an empty response body");
             return Err("Ollama returned an empty response".to_string());
         }
 
+        log::info!(
+            "Received Ollama response: content_len={}, elapsed_ms={}",
+            content.len(),
+            started_at.elapsed().as_millis()
+        );
+
         Ok(content)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationRole {
+    User,
+    Assistant,
+}
+
+impl ConversationRole {
+    fn as_ollama_role(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationMessage {
+    pub role: ConversationRole,
+    pub content: String,
 }
 
 #[derive(Serialize)]
@@ -94,6 +148,7 @@ struct ChatMessage {
 #[derive(Serialize)]
 struct ChatOptions {
     temperature: Option<f32>,
+    num_predict: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
