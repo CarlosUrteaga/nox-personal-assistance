@@ -1,44 +1,39 @@
-use crate::tools::{ToolResponse, gmail, calendar};
+use crate::agent::orchestrator::AgentOrchestrator;
+use crate::config::AppConfig;
+use crate::tools::ToolResponse;
 
-pub struct NoxAgent;
+pub struct NoxAgent {
+    orchestrator: AgentOrchestrator,
+}
 
 impl NoxAgent {
-    pub fn new() -> Self {
-        Self
+    pub fn new(config: AppConfig) -> Self {
+        let orchestrator = AgentOrchestrator::new(config)
+            .unwrap_or_else(|e| panic!("Failed to initialize orchestrator: {}", e));
+        Self { orchestrator }
     }
 
-    pub async fn process_heartbeat(&self) -> Vec<Result<ToolResponse, String>> {
-        let mut responses = Vec::new();
-
-        // 1. Check New Emails
-        match gmail::check_new_emails().await {
-            Ok(Some(resp)) => responses.push(Ok(resp)),
-            Ok(None) => {}, // No new emails
-            Err(e) => responses.push(Err(format!("Email Check Error: {}", e))),
-        }
-
-        // 2. Sync Invitations
-        match gmail::sync_invitations().await {
-            Ok(Some(resp)) => responses.push(Ok(resp)),
-            Ok(None) => {}, // No sync needed
-            Err(e) => responses.push(Err(format!("Sync Error: {}", e))),
-        }
-
-        responses
+    pub async fn chat(&self, chat_id: i64, message: &str) -> Result<ToolResponse, String> {
+        self.orchestrator.chat(chat_id, message).await
     }
 
-    pub async fn handle_command(&self, cmd: &str) -> Result<ToolResponse, String> {
-        match cmd {
-            "calendar" => {
-                calendar::fetch_calendar_summary().await?
-                    .ok_or_else(|| "No events found.".to_string())
-            },
-            "email" => {
-                // Manual trigger for sync (scan last 10)
-                gmail::sync_invitations().await?
-                    .ok_or_else(|| "No sync actions taken.".to_string())
-            },
-            _ => Err("Unknown command".to_string()),
-        }
+    pub async fn clear_memory(&self, chat_id: i64) {
+        self.orchestrator.clear_memory(chat_id).await;
+    }
+
+    pub async fn add_todo(&self, content: &str) -> Result<ToolResponse, String> {
+        self.orchestrator.add_todo(content).await
+    }
+
+    pub async fn list_todos(&self) -> Result<ToolResponse, String> {
+        self.orchestrator.list_todos().await
+    }
+
+    pub async fn complete_todo(&self, id: u64) -> Result<ToolResponse, String> {
+        self.orchestrator.complete_todo(id).await
+    }
+
+    pub async fn maybe_handle_todo_intent(&self, message: &str) -> Result<Option<ToolResponse>, String> {
+        self.orchestrator.maybe_handle_todo_intent(message).await
     }
 }
