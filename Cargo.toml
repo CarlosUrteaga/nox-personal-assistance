@@ -17,6 +17,7 @@ sha2 = "0.10"
 hex = "0.4"
 ical = "0.11"
 urlencoding = "2.1"
+async-trait = "0.1"
 
 teloxide = { version = "0.13", default-features = false, features = [
     "macros",

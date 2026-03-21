@@ -1,4 +1,6 @@
+use crate::calendar::destination::CalendarDestination;
 use crate::calendar::domain::{NormalizedTiming, ReconcileStats, ResolvedBlocker};
+use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
@@ -11,13 +13,13 @@ const NOX_FINGERPRINT_KEY: &str = "noxFingerprint";
 const NOX_SOURCE_ID_KEY: &str = "noxSourceId";
 const NOX_CATEGORY_KEY: &str = "noxCategory";
 
-pub struct GoogleCalendarClient {
+pub struct GoogleCalendarDestination {
     client: Client,
     access_token: String,
     calendar_id: String,
 }
 
-impl GoogleCalendarClient {
+impl GoogleCalendarDestination {
     pub fn new(access_token: String, calendar_id: String, timeout_secs: u64) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
@@ -30,7 +32,7 @@ impl GoogleCalendarClient {
         })
     }
 
-    pub async fn reconcile(
+    async fn reconcile_inner(
         &self,
         desired: &[ResolvedBlocker],
         window_start: DateTime<Utc>,
@@ -242,6 +244,18 @@ impl GoogleCalendarClient {
         self.client
             .request(method, url)
             .bearer_auth(&self.access_token)
+    }
+}
+
+#[async_trait]
+impl CalendarDestination for GoogleCalendarDestination {
+    async fn reconcile(
+        &self,
+        desired: &[ResolvedBlocker],
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> Result<ReconcileStats, String> {
+        self.reconcile_inner(desired, window_start, window_end).await
     }
 }
 

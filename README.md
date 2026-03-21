@@ -35,6 +35,7 @@ Copy `.env.example` to `.env` and set:
 - `MAX_HISTORY_MESSAGES`
 - `TODO_STORE_PATH`
 - `DESTINATION_CALENDAR_ID`
+- `CALENDAR_DESTINATION_PROVIDER`
 - `GOOGLE_CALENDAR_ACCESS_TOKEN`
 - `HEARTBEAT_INTERVAL_SECS`
 - `HEARTBEAT_SYNC_WINDOW_DAYS`
@@ -62,9 +63,20 @@ If `CALENDAR_SOURCES_JSON` is configured with at least one enabled source, the p
 - Sends invite updates to configured `CALENDAR_TARGET_EMAILS`, excluding the winning source `owner_email`
 - Sends Telegram messages only when the heartbeat fails or when blockers changed
 
+Manual CLI commands:
+
+```bash
+cargo run -- calendar-sync
+cargo run -- calendar-sync --dry-run
+```
+
+- `calendar-sync` runs a one-off reconcile without starting Telegram.
+- `calendar-sync --dry-run` fetches sources and resolves blockers without writing to the destination calendar.
+
 Example calendar config for `.env`:
 
 ```env
+CALENDAR_DESTINATION_PROVIDER=google
 DESTINATION_CALENDAR_ID=primary
 GOOGLE_CALENDAR_ACCESS_TOKEN=ya29...
 HEARTBEAT_INTERVAL_SECS=1800
@@ -107,6 +119,7 @@ curl https://www.googleapis.com/calendar/v3/users/me/calendarList \
 
 Notes:
 
+- `CALENDAR_DESTINATION_PROVIDER` currently supports `google`.
 - `GOOGLE_CALENDAR_ACCESS_TOKEN` expects the `access_token`, not the OAuth client ID or client secret.
 - Access tokens expire. This project currently expects you to refresh or replace the token manually.
 - Treat the access token, refresh token, client secret, and private ICS URLs as secrets.

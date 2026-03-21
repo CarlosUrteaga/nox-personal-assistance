@@ -35,6 +35,7 @@ pub struct AppConfig {
     pub todo_store_path: String,
     pub calendar_sources: Vec<CalendarSourceConfig>,
     pub destination_calendar_id: Option<String>,
+    pub calendar_destination_provider: Option<String>,
     pub google_calendar_access_token: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub heartbeat_sync_window_days: i64,
@@ -77,6 +78,11 @@ impl AppConfig {
             .ok()
             .or_else(|| read_dotenv_value("DESTINATION_CALENDAR_ID"))
             .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let calendar_destination_provider = env::var("CALENDAR_DESTINATION_PROVIDER")
+            .ok()
+            .or_else(|| read_dotenv_value("CALENDAR_DESTINATION_PROVIDER"))
+            .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty());
         let google_calendar_access_token = env::var("GOOGLE_CALENDAR_ACCESS_TOKEN")
             .ok()
@@ -125,6 +131,7 @@ impl AppConfig {
             todo_store_path,
             calendar_sources,
             destination_calendar_id,
+            calendar_destination_provider,
             google_calendar_access_token,
             heartbeat_interval_secs,
             heartbeat_sync_window_days,
@@ -257,6 +264,7 @@ mod tests {
             env::remove_var("MAX_HISTORY_MESSAGES");
             env::set_var("CALENDAR_SOURCES_JSON", "");
             env::remove_var("DESTINATION_CALENDAR_ID");
+            env::remove_var("CALENDAR_DESTINATION_PROVIDER");
             env::remove_var("GOOGLE_CALENDAR_ACCESS_TOKEN");
             env::set_var("CALENDAR_TARGET_EMAILS", "");
         }
@@ -280,6 +288,7 @@ mod tests {
             env::set_var("CHAT_ID", "bad");
             env::set_var("CALENDAR_SOURCES_JSON", "");
             env::remove_var("DESTINATION_CALENDAR_ID");
+            env::remove_var("CALENDAR_DESTINATION_PROVIDER");
             env::remove_var("GOOGLE_CALENDAR_ACCESS_TOKEN");
             env::set_var("CALENDAR_TARGET_EMAILS", "");
         }
@@ -299,6 +308,7 @@ mod tests {
                 r#"[{"id":"client","type":"ics","url":"https://example.test/client.ics","label":"Busy - Client","priority":100,"category":"business","enabled":true,"owner_email":"client@example.test"}]"#,
             );
             env::set_var("DESTINATION_CALENDAR_ID", "primary");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
             env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "secret");
             env::set_var(
                 "CALENDAR_TARGET_EMAILS",
@@ -323,6 +333,7 @@ mod tests {
             env::set_var("CALENDAR_SOURCES_JSON", "");
             env::remove_var("CALENDAR_SOURCES_JSON");
             env::set_var("DESTINATION_CALENDAR_ID", "primary");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
             env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "secret");
             env::set_var(
                 "CALENDAR_TARGET_EMAILS",
@@ -359,6 +370,7 @@ mod tests {
                 r#"[{"id":"client","type":"ics","url":"https://example.test/a.ics","label":"Busy - Client","priority":100,"category":"business","enabled":true,"owner_email":"client@example.test"},{"id":"CLIENT","type":"ics","url":"https://example.test/b.ics","label":"Busy - Client 2","priority":80,"category":"business","enabled":true,"owner_email":"personal@example.test"}]"#,
             );
             env::set_var("DESTINATION_CALENDAR_ID", "primary");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
             env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "secret");
             env::set_var(
                 "CALENDAR_TARGET_EMAILS",
