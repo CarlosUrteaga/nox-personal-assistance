@@ -33,6 +33,10 @@ impl NoxAgent {
         self.orchestrator.complete_todo(id).await
     }
 
+    pub async fn calendar_sync(&self) -> Result<ToolResponse, String> {
+        self.orchestrator.calendar_sync().await
+    }
+
     pub async fn maybe_handle_todo_intent(&self, message: &str) -> Result<Option<ToolResponse>, String> {
         self.orchestrator.maybe_handle_todo_intent(message).await
     }

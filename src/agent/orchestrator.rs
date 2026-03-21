@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::calendar::heartbeat::run_calendar_sync;
 use crate::llm::ollama::{ConversationMessage, ConversationRole, OllamaClient};
 use crate::tools::todo::TodoStore;
 use crate::tools::{DataType, ToolResponse};
@@ -110,6 +111,23 @@ impl AgentOrchestrator {
             }
             None => Err(format!("Todo #{} was not found.", id)),
         }
+    }
+
+    pub async fn calendar_sync(&self) -> Result<ToolResponse, String> {
+        let outcome = run_calendar_sync(&self.config).await?;
+        let content = format!(
+            "Calendar sync finished.\nSource events: {}\nResolved blockers: {}\nCreated: {}\nUpdated: {}\nCancelled: {}",
+            outcome.source_events,
+            outcome.blockers,
+            outcome.stats.created,
+            outcome.stats.updated,
+            outcome.stats.deleted
+        );
+
+        Ok(ToolResponse {
+            content,
+            data_type: DataType::Text,
+        })
     }
 
     pub async fn maybe_handle_todo_intent(
