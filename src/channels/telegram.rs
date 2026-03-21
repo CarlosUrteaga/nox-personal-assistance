@@ -60,17 +60,23 @@ impl TelegramChannel {
                 let trimmed = text.trim();
                 let response = if trimmed.eq_ignore_ascii_case("/start") {
                     format!(
-                        "{} is online.\n\nUse /todo <task>, /todos, /done <id>, /reset, or just chat normally.",
+                        "{} is online.\n\nUse /todo <task>, /todos, /done <id>, /calendar-sync, /reset, or just chat normally.",
                         assistant_name
                     )
                 } else if trimmed.eq_ignore_ascii_case("/help") {
                     format!(
-                        "Commands:\n/start\n/help\n/reset\n/todo <task>\n/todos\n/done <id>\n\nAny other text is sent to {}.",
+                        "Commands:\n/start\n/help\n/reset\n/todo <task>\n/todos\n/done <id>\n/calendar-sync\n\nAny other text is sent to {}.",
                         assistant_name
                     )
                 } else if trimmed.eq_ignore_ascii_case("/reset") {
                     agent.clear_memory(msg.chat.id.0).await;
                     "Conversation memory cleared.".to_string()
+                } else if trimmed.eq_ignore_ascii_case("/calendar-sync") {
+                    let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
+                    match agent.calendar_sync().await {
+                        Ok(resp) => resp.content,
+                        Err(e) => format!("Calendar sync error: {}", e),
+                    }
                 } else if let Some(todo_text) = trimmed.strip_prefix("/todo ") {
                     match agent.add_todo(todo_text.trim()).await {
                         Ok(resp) => resp.content,
@@ -123,5 +129,13 @@ impl TelegramChannel {
             .build()
             .dispatch()
             .await;
+    }
+
+    pub async fn send_system_message(&self, message: &str) -> Result<(), String> {
+        self.bot
+            .send_message(self.target_chat, message.to_string())
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Failed to send Telegram system message: {}", e))
     }
 }
