@@ -6,7 +6,11 @@ mod llm;
 mod tools;
 
 use crate::agent::NoxAgent;
+use crate::calendar::format::{
+    format_calendar_sync_cli, format_calendar_sync_dry_run_cli,
+};
 use crate::calendar::heartbeat::CalendarHeartbeat;
+use crate::calendar::service::CalendarSyncService;
 use crate::channels::telegram::TelegramChannel;
 use crate::config::AppConfig;
 use dotenv::dotenv;
@@ -18,6 +22,7 @@ async fn main() {
     dotenv().ok();
     pretty_env_logger::init();
 
+    let cli_args = env::args().skip(1).collect::<Vec<_>>();
     let arch = env::consts::ARCH;
     log::info!("NOX running on architecture: {}", arch);
 
@@ -34,6 +39,10 @@ async fn main() {
         config.ollama_num_predict,
         config.max_history_messages
     );
+
+    if handle_cli_command(&config, &cli_args).await {
+        return;
+    }
 
     // 1. Initialize Core Agent
     let agent = Arc::new(NoxAgent::new(config.clone()));
@@ -66,4 +75,55 @@ async fn main() {
 
     // 4. Start Channel (Blocking/Dispatching)
     telegram_channel.start(agent).await;
+}
+
+async fn handle_cli_command(config: &AppConfig, args: &[String]) -> bool {
+    if args.is_empty() {
+        return false;
+    }
+
+    match args {
+        [command] if command == "calendar-sync" => {
+            let service = match CalendarSyncService::new(config.clone()) {
+                Ok(service) => service,
+                Err(err) => {
+                    eprintln!("calendar-sync failed: {}", err);
+                    std::process::exit(1);
+                }
+            };
+            match service.sync_once().await {
+                Ok(outcome) => {
+                    println!("{}", format_calendar_sync_cli(&outcome));
+                    std::process::exit(0);
+                }
+                Err(err) => {
+                    eprintln!("calendar-sync failed: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        [command, flag] if command == "calendar-sync" && flag == "--dry-run" => {
+            let service = match CalendarSyncService::new(config.clone()) {
+                Ok(service) => service,
+                Err(err) => {
+                    eprintln!("calendar-sync --dry-run failed: {}", err);
+                    std::process::exit(1);
+                }
+            };
+            match service.preview_once().await {
+                Ok(outcome) => {
+                    println!("{}", format_calendar_sync_dry_run_cli(&outcome));
+                    std::process::exit(0);
+                }
+                Err(err) => {
+                    eprintln!("calendar-sync --dry-run failed: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("unknown command. supported: `calendar-sync`, `calendar-sync --dry-run`");
+            std::process::exit(2);
+        }
+    }
 }

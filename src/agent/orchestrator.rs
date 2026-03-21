@@ -1,5 +1,6 @@
+use crate::calendar::format::format_calendar_sync_summary;
 use crate::config::AppConfig;
-use crate::calendar::heartbeat::run_calendar_sync;
+use crate::calendar::service::CalendarSyncService;
 use crate::llm::ollama::{ConversationMessage, ConversationRole, OllamaClient};
 use crate::tools::todo::TodoStore;
 use crate::tools::{DataType, ToolResponse};
@@ -114,15 +115,9 @@ impl AgentOrchestrator {
     }
 
     pub async fn calendar_sync(&self) -> Result<ToolResponse, String> {
-        let outcome = run_calendar_sync(&self.config).await?;
-        let content = format!(
-            "Calendar sync finished.\nSource events: {}\nResolved blockers: {}\nCreated: {}\nUpdated: {}\nCancelled: {}",
-            outcome.source_events,
-            outcome.blockers,
-            outcome.stats.created,
-            outcome.stats.updated,
-            outcome.stats.deleted
-        );
+        let service = CalendarSyncService::new(self.config.clone())?;
+        let outcome = service.sync_once().await?;
+        let content = format_calendar_sync_summary(&outcome);
 
         Ok(ToolResponse {
             content,
