@@ -76,7 +76,6 @@ impl NormalizedEvent {
             fingerprint,
         }
     }
-
 }
 
 impl ResolvedBlocker {
@@ -88,8 +87,14 @@ impl ResolvedBlocker {
         timing: NormalizedTiming,
     ) -> Self {
         let attendee_key = attendees.join(",");
-        let fingerprint =
-            fingerprint_parts(&["blocker", &source_id, &label, &category, &attendee_key, &timing_fingerprint(&timing)]);
+        let fingerprint = fingerprint_parts(&[
+            "blocker",
+            &source_id,
+            &label,
+            &category,
+            &attendee_key,
+            &timing_fingerprint(&timing),
+        ]);
 
         Self {
             source_id,
@@ -103,7 +108,11 @@ impl ResolvedBlocker {
 }
 
 impl NormalizedTiming {
-    pub fn intersects_window(&self, window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> bool {
+    pub fn intersects_window(
+        &self,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> bool {
         match self {
             Self::Timed { start, end } => *start < window_end && *end > window_start,
             Self::AllDay {
@@ -125,9 +134,16 @@ impl NormalizedTiming {
 
     pub fn overlaps(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Timed { start: a_start, end: a_end }, Self::Timed { start: b_start, end: b_end }) => {
-                *a_start < *b_end && *a_end > *b_start
-            }
+            (
+                Self::Timed {
+                    start: a_start,
+                    end: a_end,
+                },
+                Self::Timed {
+                    start: b_start,
+                    end: b_end,
+                },
+            ) => *a_start < *b_end && *a_end > *b_start,
             (
                 Self::AllDay {
                     start_date: a_start,
@@ -159,8 +175,14 @@ impl NormalizedTiming {
     pub fn merge_with(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (
-                Self::Timed { start: left_start, end: left_end },
-                Self::Timed { start: right_start, end: right_end },
+                Self::Timed {
+                    start: left_start,
+                    end: left_end,
+                },
+                Self::Timed {
+                    start: right_start,
+                    end: right_end,
+                },
             ) if *left_end == *right_start => Some(Self::Timed {
                 start: *left_start,
                 end: *right_end,
@@ -181,7 +203,6 @@ impl NormalizedTiming {
             _ => None,
         }
     }
-
 }
 
 pub fn timing_fingerprint(timing: &NormalizedTiming) -> String {

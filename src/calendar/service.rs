@@ -1,10 +1,10 @@
-use crate::calendar::destination::{build_calendar_destination, CalendarDestination};
+use crate::calendar::destination::{CalendarDestination, build_calendar_destination};
 use crate::calendar::domain::{NormalizedEvent, ReconcileStats};
 use crate::calendar::ics::IcsFetcher;
 use crate::calendar::resolve::resolve_blockers;
 use crate::config::AppConfig;
+use chrono::DateTime;
 use chrono::{Duration, Utc};
-use chrono::{DateTime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalendarSyncOutcome {
@@ -104,7 +104,11 @@ pub fn validate_calendar_sync_config(config: &AppConfig) -> Result<(), String> {
     if config.destination_calendar_id.is_none() {
         return Err("DESTINATION_CALENDAR_ID must be configured".to_string());
     }
-    match config.calendar_destination_provider.as_deref().unwrap_or("google") {
+    match config
+        .calendar_destination_provider
+        .as_deref()
+        .unwrap_or("google")
+    {
         "google" => {
             if config.google_calendar_access_token.is_none() {
                 return Err("GOOGLE_CALENDAR_ACCESS_TOKEN must be configured".to_string());

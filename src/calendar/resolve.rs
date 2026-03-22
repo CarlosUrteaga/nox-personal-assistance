@@ -106,7 +106,10 @@ fn resolve_timed_blockers(
 
     for event in events {
         if let NormalizedTiming::Timed { start, end } = event.timing {
-            if start < window_end && end > window_start && !is_shadowed_by_all_day(&event.timing, all_day_winners) {
+            if start < window_end
+                && end > window_start
+                && !is_shadowed_by_all_day(&event.timing, all_day_winners)
+            {
                 boundaries.insert(start);
                 boundaries.insert(end);
             }
@@ -194,14 +197,20 @@ fn is_shadowed_by_all_day(
         if day >= end_day {
             break;
         }
-        day = day.checked_add_days(Days::new(1)).expect("date progression");
+        day = day
+            .checked_add_days(Days::new(1))
+            .expect("date progression");
     }
     false
 }
 
 fn sort_key(blocker: &ResolvedBlocker) -> (i64, String, String) {
     match blocker.timing {
-        NormalizedTiming::Timed { start, .. } => (start.timestamp(), blocker.source_id.clone(), blocker.label.clone()),
+        NormalizedTiming::Timed { start, .. } => (
+            start.timestamp(),
+            blocker.source_id.clone(),
+            blocker.label.clone(),
+        ),
         NormalizedTiming::AllDay { start_date, .. } => (
             start_date
                 .and_hms_opt(0, 0, 0)
@@ -275,7 +284,10 @@ mod tests {
 
         assert_eq!(blockers.len(), 2);
         assert_eq!(blockers[1].label, "Busy - Client");
-        assert_eq!(blockers[1].attendees, vec!["personal@example.test".to_string()]);
+        assert_eq!(
+            blockers[1].attendees,
+            vec!["personal@example.test".to_string()]
+        );
     }
 
     #[test]
@@ -313,7 +325,13 @@ mod tests {
         );
 
         assert_eq!(blockers.len(), 1);
-        assert!(matches!(blockers[0].timing, NormalizedTiming::AllDay { .. }));
-        assert_eq!(blockers[0].attendees, vec!["client@example.test".to_string()]);
+        assert!(matches!(
+            blockers[0].timing,
+            NormalizedTiming::AllDay { .. }
+        ));
+        assert_eq!(
+            blockers[0].attendees,
+            vec!["client@example.test".to_string()]
+        );
     }
 }

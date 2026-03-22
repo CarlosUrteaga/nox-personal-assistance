@@ -1,6 +1,4 @@
-use crate::calendar::format::{
-    format_calendar_heartbeat_error, format_calendar_heartbeat_success,
-};
+use crate::calendar::format::{format_calendar_heartbeat_error, format_calendar_heartbeat_success};
 use crate::calendar::service::{CalendarSyncService, validate_calendar_sync_config};
 use crate::channels::telegram::TelegramChannel;
 use crate::config::AppConfig;
@@ -19,8 +17,9 @@ impl CalendarHeartbeat {
     }
 
     pub async fn run(self) {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(self.service.heartbeat_interval_secs()));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+            self.service.heartbeat_interval_secs(),
+        ));
 
         loop {
             interval.tick().await;

@@ -1,9 +1,11 @@
 use crate::calendar::domain::{NormalizedEvent, NormalizedTiming};
 use crate::config::CalendarSourceConfig;
-use chrono::{DateTime, Datelike, Days, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Days, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday,
+};
 use chrono_tz::Tz;
-use ical::parser::ical::component::IcalEvent;
 use ical::parser::ical::IcalParser;
+use ical::parser::ical::component::IcalEvent;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -87,18 +89,19 @@ fn expand_event(
         (ParsedTime::Timed(start), ParsedTime::Timed(end)) if end > start => {
             NormalizedTiming::Timed { start, end }
         }
-        (
-            ParsedTime::AllDay(start_date),
-            ParsedTime::AllDay(end_date_exclusive),
-        ) if end_date_exclusive > start_date => NormalizedTiming::AllDay {
-            start_date,
-            end_date_exclusive,
-        },
+        (ParsedTime::AllDay(start_date), ParsedTime::AllDay(end_date_exclusive))
+            if end_date_exclusive > start_date =>
+        {
+            NormalizedTiming::AllDay {
+                start_date,
+                end_date_exclusive,
+            }
+        }
         (ParsedTime::AllDay(start_date), ParsedTime::Timed(_)) => NormalizedTiming::AllDay {
             start_date,
-            end_date_exclusive: start_date.checked_add_days(Days::new(1)).ok_or_else(|| {
-                format!("Invalid all-day end for source '{}'", source.id)
-            })?,
+            end_date_exclusive: start_date
+                .checked_add_days(Days::new(1))
+                .ok_or_else(|| format!("Invalid all-day end for source '{}'", source.id))?,
         },
         (ParsedTime::Timed(start), ParsedTime::AllDay(end_date_exclusive)) => {
             let end = end_date_exclusive
@@ -116,7 +119,13 @@ fn expand_event(
     let candidates = if recurrence_id.is_some() || rrule.is_none() {
         vec![base_timing]
     } else {
-        expand_rrule(&base_timing, rrule.as_deref(), &exdates, window_start, window_end)?
+        expand_rrule(
+            &base_timing,
+            rrule.as_deref(),
+            &exdates,
+            window_start,
+            window_end,
+        )?
     };
 
     Ok(candidates
@@ -148,15 +157,30 @@ fn expand_rrule(
 
     let parsed_rule = ParsedRRule::parse(rrule)?;
     match base_timing {
-        NormalizedTiming::Timed { start, end } => {
-            expand_timed_rrule(*start, *end - *start, &parsed_rule, exdates, window_start, window_end)
-        }
+        NormalizedTiming::Timed { start, end } => expand_timed_rrule(
+            *start,
+            *end - *start,
+            &parsed_rule,
+            exdates,
+            window_start,
+            window_end,
+        ),
         NormalizedTiming::AllDay {
             start_date,
             end_date_exclusive,
         } => {
-            let span_days = end_date_exclusive.signed_duration_since(*start_date).num_days().max(1);
-            expand_all_day_rrule(*start_date, span_days, &parsed_rule, exdates, window_start, window_end)
+            let span_days = end_date_exclusive
+                .signed_duration_since(*start_date)
+                .num_days()
+                .max(1);
+            expand_all_day_rrule(
+                *start_date,
+                span_days,
+                &parsed_rule,
+                exdates,
+                window_start,
+                window_end,
+            )
         }
     }
 }
@@ -209,14 +233,15 @@ fn expand_timed_rrule(
             let mut day = week_start;
             let mut seen = 0usize;
             while let Some(next_day) = day.checked_add_days(Days::new(1)) {
-                let weeks_since = day.signed_duration_since(week_start).num_days().div_euclid(7);
+                let weeks_since = day
+                    .signed_duration_since(week_start)
+                    .num_days()
+                    .div_euclid(7);
                 if weeks_since >= 0
                     && weeks_since % i64::from(rule.interval) == 0
                     && byday.contains(&day.weekday())
                 {
-                    let current = day
-                        .and_time(base_start.time())
-                        .and_utc();
+                    let current = day.and_time(base_start.time()).and_utc();
                     if current >= base_start {
                         if let Some(count) = rule.count {
                             if seen >= count {
@@ -238,10 +263,7 @@ fn expand_timed_rrule(
                         seen += 1;
                     }
                 }
-                if day
-                    .and_hms_opt(0, 0, 0)
-                    .expect("valid week day")
-                    .and_utc()
+                if day.and_hms_opt(0, 0, 0).expect("valid week day").and_utc()
                     > window_end + Duration::weeks(i64::from(rule.interval))
                 {
                     break;
@@ -287,9 +309,9 @@ fn expand_all_day_rrule(
                 if is_until_exceeded(current_dt, rule.until) {
                     break;
                 }
-                let end = current.checked_add_days(Days::new(span_days as u64)).ok_or_else(|| {
-                    "Failed to expand all-day recurring event".to_string()
-                })?;
+                let end = current
+                    .checked_add_days(Days::new(span_days as u64))
+                    .ok_or_else(|| "Failed to expand all-day recurring event".to_string())?;
                 if current_dt < window_end
                     && end.and_hms_opt(0, 0, 0).expect("valid end").and_utc() > window_start
                     && !exdates.contains(&current.to_string())
@@ -299,9 +321,9 @@ fn expand_all_day_rrule(
                         end_date_exclusive: end,
                     });
                 }
-                current = current.checked_add_days(Days::new(u64::from(rule.interval))).ok_or_else(
-                    || "Failed to advance all-day recurring event".to_string(),
-                )?;
+                current = current
+                    .checked_add_days(Days::new(u64::from(rule.interval)))
+                    .ok_or_else(|| "Failed to advance all-day recurring event".to_string())?;
                 seen += 1;
                 if current.and_hms_opt(0, 0, 0).expect("valid next").and_utc()
                     > window_end + Duration::days(i64::from(rule.interval))
@@ -319,7 +341,10 @@ fn expand_all_day_rrule(
             let mut day = base_start;
             let mut seen = 0usize;
             while let Some(next_day) = day.checked_add_days(Days::new(1)) {
-                let weeks_since = day.signed_duration_since(base_start).num_days().div_euclid(7);
+                let weeks_since = day
+                    .signed_duration_since(base_start)
+                    .num_days()
+                    .div_euclid(7);
                 if weeks_since >= 0
                     && weeks_since % i64::from(rule.interval) == 0
                     && byday.contains(&day.weekday())
@@ -333,9 +358,11 @@ fn expand_all_day_rrule(
                     if is_until_exceeded(current_dt, rule.until) {
                         break;
                     }
-                    let end = day.checked_add_days(Days::new(span_days as u64)).ok_or_else(|| {
-                        "Failed to expand weekly all-day recurring event".to_string()
-                    })?;
+                    let end = day
+                        .checked_add_days(Days::new(span_days as u64))
+                        .ok_or_else(|| {
+                            "Failed to expand weekly all-day recurring event".to_string()
+                        })?;
                     if current_dt < window_end
                         && end.and_hms_opt(0, 0, 0).expect("valid end").and_utc() > window_start
                         && !exdates.contains(&day.to_string())
@@ -374,7 +401,10 @@ fn property_value(event: &IcalEvent, name: &str) -> Option<String> {
     property(event, name).and_then(|property| property.value.clone())
 }
 
-fn parse_exdates(event: &IcalEvent, dtstart_property: &ical::property::Property) -> Result<HashSet<String>, String> {
+fn parse_exdates(
+    event: &IcalEvent,
+    dtstart_property: &ical::property::Property,
+) -> Result<HashSet<String>, String> {
     let mut values = HashSet::new();
     for property in event
         .properties
@@ -441,7 +471,10 @@ fn parse_property_time_with_override(
                 .ok_or_else(|| format!("Ambiguous ICS timezone '{}'", tzid))?;
             return Ok(ParsedTime::Timed(localized.with_timezone(&Utc)));
         }
-        log::warn!("Unsupported ICS TZID, defaulting to UTC: tzid={}", redact_tzid(tzid));
+        log::warn!(
+            "Unsupported ICS TZID, defaulting to UTC: tzid={}",
+            redact_tzid(tzid)
+        );
     }
 
     Ok(ParsedTime::Timed(naive.and_utc()))
@@ -490,7 +523,11 @@ impl ParsedRRule {
         let mut fields = HashMap::new();
         for part in raw.split(';') {
             let mut pieces = part.splitn(2, '=');
-            let key = pieces.next().unwrap_or_default().trim().to_ascii_uppercase();
+            let key = pieces
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_uppercase();
             let value = pieces.next().unwrap_or_default().trim().to_string();
             fields.insert(key, value);
         }
@@ -570,7 +607,7 @@ enum ParsedTime {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_property_time_with_override, ParsedTime};
+    use super::{ParsedTime, parse_property_time_with_override};
 
     #[test]
     fn parses_utc_ics_timestamp_with_z_suffix() {

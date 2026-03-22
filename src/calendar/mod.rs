@@ -1,5 +1,5 @@
-pub mod domain;
 pub mod destination;
+pub mod domain;
 pub mod format;
 pub mod google;
 pub mod heartbeat;

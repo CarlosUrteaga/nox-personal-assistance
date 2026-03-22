@@ -1,5 +1,6 @@
 use crate::agent::orchestrator::AgentOrchestrator;
 use crate::config::AppConfig;
+use crate::runs::RunTracker;
 use crate::tools::ToolResponse;
 
 pub struct NoxAgent {
@@ -7,8 +8,8 @@ pub struct NoxAgent {
 }
 
 impl NoxAgent {
-    pub fn new(config: AppConfig) -> Self {
-        let orchestrator = AgentOrchestrator::new(config)
+    pub fn new(config: AppConfig, run_tracker: RunTracker) -> Self {
+        let orchestrator = AgentOrchestrator::new(config, run_tracker)
             .unwrap_or_else(|e| panic!("Failed to initialize orchestrator: {}", e));
         Self { orchestrator }
     }
@@ -21,23 +22,29 @@ impl NoxAgent {
         self.orchestrator.clear_memory(chat_id).await;
     }
 
-    pub async fn add_todo(&self, content: &str) -> Result<ToolResponse, String> {
-        self.orchestrator.add_todo(content).await
+    pub async fn add_todo(&self, chat_id: i64, content: &str) -> Result<ToolResponse, String> {
+        self.orchestrator.add_todo(chat_id, content).await
     }
 
-    pub async fn list_todos(&self) -> Result<ToolResponse, String> {
-        self.orchestrator.list_todos().await
+    pub async fn list_todos(&self, chat_id: i64) -> Result<ToolResponse, String> {
+        self.orchestrator.list_todos(chat_id).await
     }
 
-    pub async fn complete_todo(&self, id: u64) -> Result<ToolResponse, String> {
-        self.orchestrator.complete_todo(id).await
+    pub async fn complete_todo(&self, chat_id: i64, id: u64) -> Result<ToolResponse, String> {
+        self.orchestrator.complete_todo(chat_id, id).await
     }
 
-    pub async fn calendar_sync(&self) -> Result<ToolResponse, String> {
-        self.orchestrator.calendar_sync().await
+    pub async fn calendar_sync(&self, chat_id: i64) -> Result<ToolResponse, String> {
+        self.orchestrator.calendar_sync(chat_id).await
     }
 
-    pub async fn maybe_handle_todo_intent(&self, message: &str) -> Result<Option<ToolResponse>, String> {
-        self.orchestrator.maybe_handle_todo_intent(message).await
+    pub async fn maybe_handle_todo_intent(
+        &self,
+        chat_id: i64,
+        message: &str,
+    ) -> Result<Option<ToolResponse>, String> {
+        self.orchestrator
+            .maybe_handle_todo_intent(chat_id, message)
+            .await
     }
 }

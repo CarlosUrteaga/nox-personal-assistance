@@ -1,6 +1,7 @@
 use serde::Deserialize;
-use std::fs;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
+use std::fs;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -40,6 +41,13 @@ pub struct AppConfig {
     pub heartbeat_interval_secs: u64,
     pub heartbeat_sync_window_days: i64,
     pub calendar_target_emails: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebConfig {
+    pub enabled: bool,
+    pub bind_address: String,
+    pub user_store_path: String,
 }
 
 impl AppConfig {
@@ -103,7 +111,9 @@ impl AppConfig {
 
         if !calendar_sources.is_empty() {
             if destination_calendar_id.is_none() {
-                return Err("DESTINATION_CALENDAR_ID must be set when calendar sync is enabled".to_string());
+                return Err(
+                    "DESTINATION_CALENDAR_ID must be set when calendar sync is enabled".to_string(),
+                );
             }
             if google_calendar_access_token.is_none() {
                 return Err(
@@ -144,6 +154,35 @@ impl AppConfig {
     }
 }
 
+impl WebConfig {
+    pub fn from_env() -> Self {
+        let enabled = env::var("WEB_ENABLED")
+            .ok()
+            .or_else(|| read_dotenv_value("WEB_ENABLED"))
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(true);
+        let bind_address = env::var("WEB_BIND_ADDRESS")
+            .ok()
+            .or_else(|| read_dotenv_value("WEB_BIND_ADDRESS"))
+            .unwrap_or_else(|| "127.0.0.1:3000".to_string());
+        let user_store_path = env::var("USER_STORE_PATH")
+            .ok()
+            .or_else(|| read_dotenv_value("USER_STORE_PATH"))
+            .unwrap_or_else(|| "data/users.json".to_string());
+
+        Self {
+            enabled,
+            bind_address,
+            user_store_path,
+        }
+    }
+}
+
 fn parse_calendar_sources() -> Result<Vec<CalendarSourceConfig>, String> {
     let Some(raw) = env::var("CALENDAR_SOURCES_JSON")
         .ok()
@@ -159,16 +198,22 @@ fn parse_calendar_sources() -> Result<Vec<CalendarSourceConfig>, String> {
     let sources: Vec<CalendarSourceConfig> = serde_json::from_str(&raw)
         .map_err(|e| format!("CALENDAR_SOURCES_JSON must be valid JSON: {}", e))?;
 
-    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_ids = HashSet::new();
     for source in &sources {
         if source.id.trim().is_empty() {
             return Err("CALENDAR_SOURCES_JSON source id must not be empty".to_string());
         }
         if source.url.trim().is_empty() {
-            return Err(format!("Calendar source '{}' url must not be empty", source.id));
+            return Err(format!(
+                "Calendar source '{}' url must not be empty",
+                source.id
+            ));
         }
         if source.label.trim().is_empty() {
-            return Err(format!("Calendar source '{}' label must not be empty", source.id));
+            return Err(format!(
+                "Calendar source '{}' label must not be empty",
+                source.id
+            ));
         }
         if let Some(owner_email) = &source.owner_email {
             if owner_email.trim().is_empty() {
@@ -183,7 +228,10 @@ fn parse_calendar_sources() -> Result<Vec<CalendarSourceConfig>, String> {
         }
     }
 
-    Ok(sources.into_iter().filter(|source| source.enabled).collect())
+    Ok(sources
+        .into_iter()
+        .filter(|source| source.enabled)
+        .collect())
 }
 
 fn parse_calendar_target_emails() -> Result<Vec<String>, String> {
@@ -212,6 +260,59 @@ fn parse_calendar_target_emails() -> Result<Vec<String>, String> {
 
 fn read_dotenv_value(key: &str) -> Option<String> {
     let contents = fs::read_to_string(".env").ok()?;
+    parse_dotenv_map(&contents).remove(key)
+}
+
+pub fn read_dotenv_map() -> BTreeMap<String, String> {
+    let contents = fs::read_to_string(".env").unwrap_or_default();
+    parse_dotenv_map(&contents)
+}
+
+pub fn write_dotenv_values(updates: &BTreeMap<String, String>) -> Result<(), String> {
+    let existing_contents = fs::read_to_string(".env").unwrap_or_default();
+    let mut rendered = Vec::new();
+    let mut seen = HashSet::new();
+
+    for line in existing_contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            rendered.push(line.to_string());
+            continue;
+        }
+
+        let Some((candidate_key, _raw_value)) = trimmed.split_once('=') else {
+            rendered.push(line.to_string());
+            continue;
+        };
+        let normalized_key = candidate_key.trim();
+        if let Some(new_value) = updates.get(normalized_key) {
+            rendered.push(format!(
+                "{}={}",
+                normalized_key,
+                format_dotenv_value(new_value)
+            ));
+            seen.insert(normalized_key.to_string());
+        } else {
+            rendered.push(line.to_string());
+        }
+    }
+
+    for (key, value) in updates {
+        if seen.contains(key) {
+            continue;
+        }
+        rendered.push(format!("{}={}", key, format_dotenv_value(value)));
+    }
+
+    let mut output = rendered.join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    fs::write(".env", output).map_err(|err| format!("failed to write .env: {}", err))
+}
+
+fn parse_dotenv_map(contents: &str) -> BTreeMap<String, String> {
+    let mut values = BTreeMap::new();
 
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -219,8 +320,11 @@ fn read_dotenv_value(key: &str) -> Option<String> {
             continue;
         }
 
-        let (candidate_key, raw_value) = trimmed.split_once('=')?;
-        if candidate_key.trim() != key {
+        let Some((candidate_key, raw_value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = candidate_key.trim();
+        if key.is_empty() {
             continue;
         }
 
@@ -232,18 +336,42 @@ fn read_dotenv_value(key: &str) -> Option<String> {
         } else {
             value
         };
-
-        if !unwrapped.is_empty() {
-            return Some(unwrapped.to_string());
-        }
+        values.insert(key.to_string(), unwrapped.to_string());
     }
 
-    None
+    values
+}
+
+fn format_dotenv_value(value: &str) -> String {
+    let trimmed = value.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let needs_quotes = trimmed.starts_with(' ')
+        || trimmed.ends_with(' ')
+        || trimmed.contains('#')
+        || trimmed.contains('=');
+
+    if !needs_quotes {
+        return trimmed.to_string();
+    }
+
+    if !trimmed.contains('\'') {
+        return format!("'{}'", trimmed);
+    }
+
+    if !trimmed.contains('"') {
+        return format!("\"{}\"", trimmed);
+    }
+
+    trimmed.to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, WebConfig, read_dotenv_map, write_dotenv_values};
+    use std::collections::BTreeMap;
     use std::env;
     use std::fs;
     use std::sync::{Mutex, OnceLock};
@@ -380,5 +508,53 @@ mod tests {
 
         let err = AppConfig::from_env().unwrap_err();
         assert!(err.contains("Duplicate calendar source id"));
+    }
+
+    #[test]
+    fn web_config_loads_defaults() {
+        let _guard = env_lock().lock().expect("env lock");
+        let original_env = fs::read_to_string(".env").ok();
+        unsafe {
+            env::remove_var("WEB_ENABLED");
+            env::remove_var("WEB_BIND_ADDRESS");
+            env::remove_var("USER_STORE_PATH");
+        }
+        fs::write(".env", "").expect("clear .env");
+
+        let config = WebConfig::from_env();
+        assert!(config.enabled);
+        assert_eq!(config.bind_address, "127.0.0.1:3000");
+        assert_eq!(config.user_store_path, "data/users.json");
+
+        match original_env {
+            Some(contents) => fs::write(".env", contents).expect("restore .env"),
+            None => {
+                let _ = fs::remove_file(".env");
+            }
+        }
+    }
+
+    #[test]
+    fn dotenv_write_updates_existing_values() {
+        let _guard = env_lock().lock().expect("env lock");
+        let original_env = fs::read_to_string(".env").ok();
+        fs::write(".env", "A=1\n# comment\nB=two words\n").expect("seed .env");
+
+        let mut updates = BTreeMap::new();
+        updates.insert("B".to_string(), "changed".to_string());
+        updates.insert("C".to_string(), "three".to_string());
+        write_dotenv_values(&updates).expect("write dotenv");
+
+        let parsed = read_dotenv_map();
+        assert_eq!(parsed.get("A").map(String::as_str), Some("1"));
+        assert_eq!(parsed.get("B").map(String::as_str), Some("changed"));
+        assert_eq!(parsed.get("C").map(String::as_str), Some("three"));
+
+        match original_env {
+            Some(contents) => fs::write(".env", contents).expect("restore .env"),
+            None => {
+                let _ = fs::remove_file(".env");
+            }
+        }
     }
 }
