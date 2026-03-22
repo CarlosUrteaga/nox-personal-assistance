@@ -1,6 +1,6 @@
 # nox-personal-assistance
 
-Telegram-based personal assistant backed by Ollama, with an optional local web settings UI and a privacy-first calendar heartbeat.
+Telegram-based personal assistant backed by Ollama, with a local web console, guided setup, and a privacy-first calendar heartbeat.
 
 ## What it does
 
@@ -8,7 +8,7 @@ Telegram-based personal assistant backed by Ollama, with an optional local web s
 - Sends them to an Ollama chat model
 - Keeps a short in-memory conversation history per chat
 - Stores internal todos locally in JSON
-- Exposes a local web interface with an observable run console, registration, login, and `.env` editing
+- Exposes a local web interface with registration, login, guided setup, a run console, and `.env` editing
 - Supports `/start`, `/help`, `/reset`, `/todo <task>`, `/todos`, and `/done <id>`
 - Also handles common natural todo phrases before falling back to chat
 - Optionally polls multiple ICS/iCal feeds and writes only generic busy blockers into a destination Google Calendar
@@ -58,7 +58,7 @@ Calendar env notes:
 cargo run
 ```
 
-With the defaults above, the web settings UI listens on `http://127.0.0.1:3000`.
+With the defaults above, the web UI listens on `http://127.0.0.1:3000`.
 If the Telegram configuration is incomplete, NOX still starts the web UI so you can finish setup there.
 
 Web auth notes:
@@ -69,10 +69,24 @@ Web auth notes:
 - The site edits the shared `.env`, so all registered users currently manage the same global configuration.
 - Changes saved in the UI are written to `.env`; restart the process to apply values already loaded in memory.
 
+Setup notes:
+
+- After registration, the user is redirected to a guided `/setup` flow.
+- The initial setup asks only for the minimum required values:
+  - `TELOXIDE_TOKEN`
+  - `CHAT_ID`
+  - `OLLAMA_BASE_URL`
+  - `OLLAMA_MODEL`
+- The setup page includes short instructions for how to obtain each required value.
+- The setup can be skipped, but the console will keep showing a configuration warning banner until the required values exist.
+- Advanced or optional configuration remains available in `/settings`.
+
 Console notes:
 
 - The authenticated home route is now a run-oriented console instead of a plain settings page.
-- Each request is rendered as a run card with status, steps, metadata, final result, and optional error context.
+- Real Telegram requests are rendered as run cards with status, steps, metadata, final result, and optional error context.
+- The console currently tracks Telegram-originated runtime activity.
+- If there are no real runs yet, the console shows a single clearly marked demo run as a fallback example.
 - The UI supports `simple` and `detailed` viewing modes and the data model is ready for future streaming and tool traces.
 
 If `CALENDAR_SOURCES_JSON` is configured with at least one enabled source, the process also starts a periodic heartbeat that:
