@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use crate::calendar::domain::{ReconcileStats, ResolvedBlocker};
 use crate::config::AppConfig;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 #[async_trait]
@@ -16,18 +16,24 @@ pub trait CalendarDestination: Send + Sync {
 pub fn build_calendar_destination(
     config: &AppConfig,
 ) -> Result<Box<dyn CalendarDestination>, String> {
-    match config.calendar_destination_provider.as_deref().unwrap_or("google") {
-        "google" => Ok(Box::new(crate::calendar::google::GoogleCalendarDestination::new(
-            config
-                .google_calendar_access_token
-                .clone()
-                .ok_or_else(|| "GOOGLE_CALENDAR_ACCESS_TOKEN must be configured".to_string())?,
-            config
-                .destination_calendar_id
-                .clone()
-                .ok_or_else(|| "DESTINATION_CALENDAR_ID must be configured".to_string())?,
-            config.ollama_timeout_secs,
-        )?)),
+    match config
+        .calendar_destination_provider
+        .as_deref()
+        .unwrap_or("google")
+    {
+        "google" => Ok(Box::new(
+            crate::calendar::google::GoogleCalendarDestination::new(
+                config
+                    .google_calendar_access_token
+                    .clone()
+                    .ok_or_else(|| "GOOGLE_CALENDAR_ACCESS_TOKEN must be configured".to_string())?,
+                config
+                    .destination_calendar_id
+                    .clone()
+                    .ok_or_else(|| "DESTINATION_CALENDAR_ID must be configured".to_string())?,
+                config.ollama_timeout_secs,
+            )?,
+        )),
         other => Err(format!(
             "Unsupported calendar destination provider '{}'",
             other

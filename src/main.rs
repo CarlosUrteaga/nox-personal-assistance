@@ -3,16 +3,17 @@ mod calendar;
 mod channels;
 mod config;
 mod llm;
+mod runs;
 mod tools;
+mod web;
 
 use crate::agent::NoxAgent;
-use crate::calendar::format::{
-    format_calendar_sync_cli, format_calendar_sync_dry_run_cli,
-};
+use crate::calendar::format::{format_calendar_sync_cli, format_calendar_sync_dry_run_cli};
 use crate::calendar::heartbeat::CalendarHeartbeat;
 use crate::calendar::service::CalendarSyncService;
 use crate::channels::telegram::TelegramChannel;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, WebConfig};
+use crate::runs::RunTracker;
 use dotenv::dotenv;
 use std::env;
 use std::sync::Arc;
@@ -26,9 +27,48 @@ async fn main() {
     let arch = env::consts::ARCH;
     log::info!("NOX running on architecture: {}", arch);
 
-    let config = AppConfig::from_env().unwrap_or_else(|e| {
-        panic!("Failed to load configuration: {}", e);
-    });
+    let web_config = WebConfig::from_env();
+    let runtime_config = AppConfig::from_env();
+    let run_tracker = RunTracker::new();
+
+    if !cli_args.is_empty() {
+        let config = runtime_config.as_ref().unwrap_or_else(|err| {
+            panic!("Failed to load configuration for CLI command: {}", err);
+        });
+        if handle_cli_command(config, &cli_args).await {
+            return;
+        }
+    }
+
+    let web_handle = if web_config.enabled {
+        let bind_address = web_config.bind_address.clone();
+        let run_tracker = run_tracker.clone();
+        Some(tokio::spawn(async move {
+            if let Err(err) = web::serve(web_config, run_tracker).await {
+                panic!("Web server failed on {}: {}", bind_address, err);
+            }
+        }))
+    } else {
+        log::info!("Web settings UI disabled via WEB_ENABLED=false");
+        None
+    };
+
+    let config = match runtime_config {
+        Ok(config) => config,
+        Err(err) => {
+            if web_handle.is_some() {
+                log::warn!(
+                    "Core assistant configuration is incomplete: {}. Web UI remains available for setup.",
+                    err
+                );
+                if let Some(handle) = web_handle {
+                    let _ = handle.await;
+                }
+                return;
+            }
+            panic!("Failed to load configuration: {}", err);
+        }
+    };
 
     log::info!(
         "Loaded config: assistant_name='{}', chat_id={}, ollama_base_url={}, ollama_model={}, ollama_num_predict={}, max_history_messages={}",
@@ -40,12 +80,8 @@ async fn main() {
         config.max_history_messages
     );
 
-    if handle_cli_command(&config, &cli_args).await {
-        return;
-    }
-
     // 1. Initialize Core Agent
-    let agent = Arc::new(NoxAgent::new(config.clone()));
+    let agent = Arc::new(NoxAgent::new(config.clone(), run_tracker.clone()));
 
     // 2. Initialize optional calendar heartbeat
     if config.calendar_sync_enabled() {
@@ -55,10 +91,16 @@ async fn main() {
             config.calendar_target_emails.len(),
             config.heartbeat_interval_secs,
             config.heartbeat_sync_window_days,
-            config.destination_calendar_id.as_deref().unwrap_or("<missing>")
+            config
+                .destination_calendar_id
+                .as_deref()
+                .unwrap_or("<missing>")
         );
-        let heartbeat = CalendarHeartbeat::new(config.clone(), TelegramChannel::new(&config))
-            .unwrap_or_else(|e| panic!("Failed to initialize calendar heartbeat: {}", e));
+        let heartbeat = CalendarHeartbeat::new(
+            config.clone(),
+            TelegramChannel::new(&config, run_tracker.clone()),
+        )
+        .unwrap_or_else(|e| panic!("Failed to initialize calendar heartbeat: {}", e));
         tokio::spawn(async move {
             heartbeat.run().await;
         });
@@ -69,7 +111,7 @@ async fn main() {
     }
 
     // 3. Initialize Channel (Telegram)
-    let telegram_channel = TelegramChannel::new(&config);
+    let telegram_channel = TelegramChannel::new(&config, run_tracker);
 
     log::info!("NOX System Started. Listening for chat messages...");
 

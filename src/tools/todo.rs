@@ -53,7 +53,11 @@ impl TodoStore {
     pub async fn list_open(&self) -> Result<Vec<TodoItem>, String> {
         let _guard = self.lock.lock().await;
         let state = self.load_state().await?;
-        Ok(state.items.into_iter().filter(|item| !item.completed).collect())
+        Ok(state
+            .items
+            .into_iter()
+            .filter(|item| !item.completed)
+            .collect())
     }
 
     pub async fn complete(&self, id: u64) -> Result<Option<TodoItem>, String> {

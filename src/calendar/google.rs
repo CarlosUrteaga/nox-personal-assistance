@@ -20,7 +20,11 @@ pub struct GoogleCalendarDestination {
 }
 
 impl GoogleCalendarDestination {
-    pub fn new(access_token: String, calendar_id: String, timeout_secs: u64) -> Result<Self, String> {
+    pub fn new(
+        access_token: String,
+        calendar_id: String,
+        timeout_secs: u64,
+    ) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
@@ -255,7 +259,8 @@ impl CalendarDestination for GoogleCalendarDestination {
         window_start: DateTime<Utc>,
         window_end: DateTime<Utc>,
     ) -> Result<ReconcileStats, String> {
-        self.reconcile_inner(desired, window_start, window_end).await
+        self.reconcile_inner(desired, window_start, window_end)
+            .await
     }
 }
 
@@ -309,15 +314,19 @@ fn event_payload(blocker: &ResolvedBlocker) -> GoogleEventPayload {
                 email: Some(email.clone()),
             })
             .collect(),
-        extended_properties: GoogleExtendedPropertiesPayload {
-            private,
-        },
+        extended_properties: GoogleExtendedPropertiesPayload { private },
     }
 }
 
 fn same_attendees(left: &[String], right: &[String]) -> bool {
-    let mut left = left.iter().map(|value| value.trim().to_ascii_lowercase()).collect::<Vec<_>>();
-    let mut right = right.iter().map(|value| value.trim().to_ascii_lowercase()).collect::<Vec<_>>();
+    let mut left = left
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut right = right
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
     left.sort();
     right.sort();
     left.dedup();

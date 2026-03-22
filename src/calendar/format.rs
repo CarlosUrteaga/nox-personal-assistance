@@ -25,8 +25,7 @@ pub fn format_calendar_sync_cli(outcome: &CalendarSyncOutcome) -> String {
 pub fn format_calendar_sync_dry_run_cli(outcome: &CalendarSyncOutcome) -> String {
     format!(
         "calendar-sync dry-run\nsource_events={}\nresolved_blockers={}\ncreated=0\nupdated=0\ndeleted=0",
-        outcome.source_events,
-        outcome.blockers,
+        outcome.source_events, outcome.blockers,
     )
 }
 
