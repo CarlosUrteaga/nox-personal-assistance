@@ -16,6 +16,7 @@ pub enum NormalizedTiming {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedEvent {
     pub source_id: String,
+    pub source_event_key: String,
     pub label: String,
     pub priority: u32,
     pub category: String,
@@ -25,12 +26,15 @@ pub struct NormalizedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedBlocker {
-    pub source_id: String,
-    pub label: String,
-    pub category: String,
-    pub attendees: Vec<String>,
+pub struct DesiredHubEvent {
+    pub canonical_event_key: String,
+    pub source_id_winner: String,
     pub timing: NormalizedTiming,
+    pub summary: String,
+    pub category: String,
+    pub invite_targets: Vec<String>,
+    pub covered_targets: Vec<String>,
+    pub has_conflict: bool,
     pub fingerprint: String,
 }
 
@@ -50,6 +54,7 @@ impl ReconcileStats {
 impl NormalizedEvent {
     pub fn new(
         source_id: String,
+        source_event_key: String,
         label: String,
         priority: u32,
         category: String,
@@ -59,6 +64,7 @@ impl NormalizedEvent {
         let fingerprint = fingerprint_parts(&[
             "normalized",
             &source_id,
+            &source_event_key,
             &label,
             &priority.to_string(),
             &category,
@@ -68,6 +74,7 @@ impl NormalizedEvent {
 
         Self {
             source_id,
+            source_event_key,
             label,
             priority,
             category,
@@ -78,30 +85,43 @@ impl NormalizedEvent {
     }
 }
 
-impl ResolvedBlocker {
+impl DesiredHubEvent {
     pub fn new(
-        source_id: String,
-        label: String,
-        category: String,
-        attendees: Vec<String>,
+        canonical_event_key: String,
+        source_id_winner: String,
         timing: NormalizedTiming,
+        summary: String,
+        category: String,
+        mut invite_targets: Vec<String>,
+        mut covered_targets: Vec<String>,
+        has_conflict: bool,
     ) -> Self {
-        let attendee_key = attendees.join(",");
+        invite_targets.sort();
+        invite_targets.dedup();
+        covered_targets.sort();
+        covered_targets.dedup();
+
         let fingerprint = fingerprint_parts(&[
-            "blocker",
-            &source_id,
-            &label,
+            "desired_hub_event",
+            &canonical_event_key,
+            &source_id_winner,
+            &summary,
             &category,
-            &attendee_key,
+            &invite_targets.join(","),
+            &covered_targets.join(","),
+            if has_conflict { "1" } else { "0" },
             &timing_fingerprint(&timing),
         ]);
 
         Self {
-            source_id,
-            label,
-            category,
-            attendees,
+            canonical_event_key,
+            source_id_winner,
             timing,
+            summary,
+            category,
+            invite_targets,
+            covered_targets,
+            has_conflict,
             fingerprint,
         }
     }
@@ -129,78 +149,6 @@ impl NormalizedTiming {
                     .and_utc();
                 all_day_start < window_end && all_day_end > window_start
             }
-        }
-    }
-
-    pub fn overlaps(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Timed {
-                    start: a_start,
-                    end: a_end,
-                },
-                Self::Timed {
-                    start: b_start,
-                    end: b_end,
-                },
-            ) => *a_start < *b_end && *a_end > *b_start,
-            (
-                Self::AllDay {
-                    start_date: a_start,
-                    end_date_exclusive: a_end,
-                },
-                Self::AllDay {
-                    start_date: b_start,
-                    end_date_exclusive: b_end,
-                },
-            ) => *a_start < *b_end && *a_end > *b_start,
-            _ => false,
-        }
-    }
-
-    pub fn same_kind(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Timed { .. }, Self::Timed { .. }) | (Self::AllDay { .. }, Self::AllDay { .. })
-        )
-    }
-
-    pub fn timed_range(&self) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-        match self {
-            Self::Timed { start, end } => Some((*start, *end)),
-            _ => None,
-        }
-    }
-
-    pub fn merge_with(&self, other: &Self) -> Option<Self> {
-        match (self, other) {
-            (
-                Self::Timed {
-                    start: left_start,
-                    end: left_end,
-                },
-                Self::Timed {
-                    start: right_start,
-                    end: right_end,
-                },
-            ) if *left_end == *right_start => Some(Self::Timed {
-                start: *left_start,
-                end: *right_end,
-            }),
-            (
-                Self::AllDay {
-                    start_date: left_start,
-                    end_date_exclusive: left_end,
-                },
-                Self::AllDay {
-                    start_date: right_start,
-                    end_date_exclusive: right_end,
-                },
-            ) if *left_end == *right_start => Some(Self::AllDay {
-                start_date: *left_start,
-                end_date_exclusive: *right_end,
-            }),
-            _ => None,
         }
     }
 }

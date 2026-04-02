@@ -1,87 +1,103 @@
 use crate::calendar::destination::CalendarDestination;
-use crate::calendar::domain::{NormalizedTiming, ReconcileStats, ResolvedBlocker};
+use crate::calendar::domain::{DesiredHubEvent, NormalizedTiming, ReconcileStats};
+use crate::calendar::google_auth::GoogleAccessTokenProvider;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 const NOX_MANAGED_KEY: &str = "noxManaged";
 const NOX_MANAGED_VALUE: &str = "true";
 const NOX_FINGERPRINT_KEY: &str = "noxFingerprint";
-const NOX_SOURCE_ID_KEY: &str = "noxSourceId";
-const NOX_CATEGORY_KEY: &str = "noxCategory";
+const NOX_CANONICAL_EVENT_KEY: &str = "noxCanonicalEventKey";
+const NOX_SOURCE_ID_WINNER_KEY: &str = "noxSourceIdWinner";
+const NOX_HAS_CONFLICT_KEY: &str = "noxHasConflict";
 
 pub struct GoogleCalendarDestination {
     client: Client,
-    access_token: String,
+    access_token_provider: Arc<GoogleAccessTokenProvider>,
     calendar_id: String,
 }
 
 impl GoogleCalendarDestination {
     pub fn new(
-        access_token: String,
+        oauth_credentials_path: Option<String>,
+        oauth_token_path: Option<String>,
+        access_token: Option<String>,
         calendar_id: String,
         timeout_secs: u64,
     ) -> Result<Self, String> {
         let client = Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| format!("Failed to build Google Calendar client: {}", e))?;
+        let access_token_provider = Arc::new(GoogleAccessTokenProvider::new(
+            oauth_credentials_path,
+            oauth_token_path,
+            access_token,
+            timeout_secs,
+        )?);
         Ok(Self {
             client,
-            access_token,
+            access_token_provider,
             calendar_id,
         })
     }
 
     async fn reconcile_inner(
         &self,
-        desired: &[ResolvedBlocker],
+        desired: &[DesiredHubEvent],
         window_start: DateTime<Utc>,
         window_end: DateTime<Utc>,
     ) -> Result<ReconcileStats, String> {
         let mut stats = ReconcileStats::default();
-        let mut existing = self.list_owned_events(window_start, window_end).await?;
-        let mut used_existing_ids = HashSet::new();
+        let listed = self.list_owned_events(window_start, window_end).await?;
+        let (mut canonical_events, mut legacy_events): (Vec<_>, Vec<_>) = listed
+            .into_iter()
+            .partition(|event| event.canonical_event_key.is_some());
+        let mut used_existing_ids = HashSet::<String>::new();
 
-        for blocker in desired {
-            if let Some(existing_index) = existing
-                .iter()
-                .position(|event| event.fingerprint == blocker.fingerprint)
-            {
-                let existing_event = &existing[existing_index];
-                used_existing_ids.insert(existing_event.id.clone());
-                if existing_event.timing != blocker.timing
-                    || existing_event.summary != blocker.label
-                    || !same_attendees(&existing_event.attendees, &blocker.attendees)
-                {
-                    self.update_event(&existing_event.id, blocker).await?;
+        for event in desired {
+            if let Some(existing_index) = canonical_events.iter().position(|e| {
+                !used_existing_ids.contains(&e.id)
+                    && e.canonical_event_key.as_deref() == Some(event.canonical_event_key.as_str())
+            }) {
+                let existing_id = canonical_events[existing_index].id.clone();
+                let existing_fingerprint = canonical_events[existing_index].fingerprint.clone();
+                used_existing_ids.insert(existing_id.clone());
+
+                if existing_fingerprint != event.fingerprint {
+                    self.update_event(&existing_id, event).await?;
                     stats.updated += 1;
                 }
                 continue;
             }
 
-            if let Some(existing_index) = existing.iter().position(|event| {
-                !used_existing_ids.contains(&event.id)
-                    && event.source_id == blocker.source_id
-                    && event.summary == blocker.label
-                    && event.timing.same_kind(&blocker.timing)
-                    && event.timing.overlaps(&blocker.timing)
-            }) {
-                let existing_id = existing[existing_index].id.clone();
-                used_existing_ids.insert(existing_id.clone());
-                self.update_event(&existing_id, blocker).await?;
+            if let Some(legacy_index) = find_legacy_match(&legacy_events, &used_existing_ids, event)
+            {
+                let legacy_id = legacy_events[legacy_index].id.clone();
+                used_existing_ids.insert(legacy_id.clone());
+                self.update_event(&legacy_id, event).await?;
                 stats.updated += 1;
                 continue;
             }
 
-            self.create_event(blocker).await?;
+            self.create_event(event).await?;
             stats.created += 1;
         }
 
-        for event in existing.drain(..) {
+        for event in canonical_events.drain(..) {
+            if !used_existing_ids.contains(&event.id) {
+                self.delete_event(&event.id).await?;
+                stats.deleted += 1;
+            }
+        }
+
+        for event in legacy_events.drain(..) {
             if !used_existing_ids.contains(&event.id) {
                 self.delete_event(&event.id).await?;
                 stats.deleted += 1;
@@ -103,6 +119,7 @@ impl GoogleCalendarDestination {
 
         let response = self
             .request(Method::GET, &url)
+            .await?
             .query(&[
                 ("timeMin", window_start.to_rfc3339()),
                 ("timeMax", window_end.to_rfc3339()),
@@ -114,7 +131,7 @@ impl GoogleCalendarDestination {
             ])
             .send()
             .await
-            .map_err(|e| format!("Failed to list destination blockers: {}", e))?;
+            .map_err(|e| format!("Failed to list destination events: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -142,44 +159,40 @@ impl GoogleCalendarDestination {
                 continue;
             }
 
-            let Some(fingerprint) = private.get(NOX_FINGERPRINT_KEY).cloned() else {
-                continue;
-            };
-            let Some(source_id) = private.get(NOX_SOURCE_ID_KEY).cloned() else {
-                continue;
-            };
+            let fingerprint = private
+                .get(NOX_FINGERPRINT_KEY)
+                .cloned()
+                .unwrap_or_default();
+            let canonical_event_key = private.get(NOX_CANONICAL_EVENT_KEY).cloned();
             let timing = parse_google_timing(item.start, item.end)?;
+            let kind = timing_kind(&timing);
             events.push(OwnedGoogleEvent {
                 id: item.id,
                 summary: item.summary.unwrap_or_default(),
-                source_id,
+                canonical_event_key,
                 fingerprint,
-                attendees: item
-                    .attendees
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|attendee| attendee.email)
-                    .collect(),
                 timing,
+                kind,
             });
         }
 
         Ok(events)
     }
 
-    async fn create_event(&self, blocker: &ResolvedBlocker) -> Result<(), String> {
+    async fn create_event(&self, event: &DesiredHubEvent) -> Result<(), String> {
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events",
             urlencoding::encode(&self.calendar_id)
         );
-        let payload = event_payload(blocker);
+        let payload = event_payload(event);
         let response = self
             .request(Method::POST, &url)
+            .await?
             .query(&[("sendUpdates", "all")])
             .json(&payload)
             .send()
             .await
-            .map_err(|e| format!("Failed to create blocker: {}", e))?;
+            .map_err(|e| format!("Failed to create hub event: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -193,20 +206,21 @@ impl GoogleCalendarDestination {
         Ok(())
     }
 
-    async fn update_event(&self, event_id: &str, blocker: &ResolvedBlocker) -> Result<(), String> {
+    async fn update_event(&self, event_id: &str, event: &DesiredHubEvent) -> Result<(), String> {
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
             urlencoding::encode(&self.calendar_id),
             urlencoding::encode(event_id)
         );
-        let payload = event_payload(blocker);
+        let payload = event_payload(event);
         let response = self
             .request(Method::PATCH, &url)
+            .await?
             .query(&[("sendUpdates", "all")])
             .json(&payload)
             .send()
             .await
-            .map_err(|e| format!("Failed to update blocker: {}", e))?;
+            .map_err(|e| format!("Failed to update hub event: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -228,9 +242,10 @@ impl GoogleCalendarDestination {
         );
         let response = self
             .request(Method::DELETE, &url)
+            .await?
             .send()
             .await
-            .map_err(|e| format!("Failed to delete blocker: {}", e))?;
+            .map_err(|e| format!("Failed to delete hub event: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -244,10 +259,9 @@ impl GoogleCalendarDestination {
         Ok(())
     }
 
-    fn request(&self, method: Method, url: &str) -> reqwest::RequestBuilder {
-        self.client
-            .request(method, url)
-            .bearer_auth(&self.access_token)
+    async fn request(&self, method: Method, url: &str) -> Result<reqwest::RequestBuilder, String> {
+        let access_token = self.access_token_provider.access_token().await?;
+        Ok(self.client.request(method, url).bearer_auth(access_token))
     }
 }
 
@@ -255,7 +269,7 @@ impl GoogleCalendarDestination {
 impl CalendarDestination for GoogleCalendarDestination {
     async fn reconcile(
         &self,
-        desired: &[ResolvedBlocker],
+        desired: &[DesiredHubEvent],
         window_start: DateTime<Utc>,
         window_end: DateTime<Utc>,
     ) -> Result<ReconcileStats, String> {
@@ -264,8 +278,8 @@ impl CalendarDestination for GoogleCalendarDestination {
     }
 }
 
-fn event_payload(blocker: &ResolvedBlocker) -> GoogleEventPayload {
-    let (start, end) = match &blocker.timing {
+fn event_payload(event: &DesiredHubEvent) -> GoogleEventPayload {
+    let (start, end) = match &event.timing {
         NormalizedTiming::Timed { start, end } => (
             GoogleEventDateTime {
                 date: None,
@@ -297,41 +311,41 @@ fn event_payload(blocker: &ResolvedBlocker) -> GoogleEventPayload {
 
     let mut private = HashMap::new();
     private.insert(NOX_MANAGED_KEY.to_string(), NOX_MANAGED_VALUE.to_string());
-    private.insert(NOX_FINGERPRINT_KEY.to_string(), blocker.fingerprint.clone());
-    private.insert(NOX_SOURCE_ID_KEY.to_string(), blocker.source_id.clone());
-    private.insert(NOX_CATEGORY_KEY.to_string(), blocker.category.clone());
+    private.insert(NOX_FINGERPRINT_KEY.to_string(), event.fingerprint.clone());
+    private.insert(
+        NOX_CANONICAL_EVENT_KEY.to_string(),
+        event.canonical_event_key.clone(),
+    );
+    private.insert(
+        NOX_SOURCE_ID_WINNER_KEY.to_string(),
+        event.source_id_winner.clone(),
+    );
+    private.insert(
+        NOX_HAS_CONFLICT_KEY.to_string(),
+        if event.has_conflict {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        },
+    );
 
     GoogleEventPayload {
-        summary: blocker.label.clone(),
+        summary: event.summary.clone(),
         visibility: Some("private".to_string()),
         transparency: Some("opaque".to_string()),
         start,
         end,
-        attendees: blocker
-            .attendees
-            .iter()
-            .map(|email| GoogleEventAttendee {
-                email: Some(email.clone()),
-            })
-            .collect(),
+        attendees: Some(
+            event
+                .invite_targets
+                .iter()
+                .map(|email| GoogleEventAttendee {
+                    email: Some(email.clone()),
+                })
+                .collect(),
+        ),
         extended_properties: GoogleExtendedPropertiesPayload { private },
     }
-}
-
-fn same_attendees(left: &[String], right: &[String]) -> bool {
-    let mut left = left
-        .iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    let mut right = right
-        .iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    left.sort();
-    right.sort();
-    left.dedup();
-    right.dedup();
-    left == right
 }
 
 fn parse_google_timing(
@@ -366,14 +380,45 @@ fn sanitize_google_body(body: &str) -> String {
     body.chars().take(256).collect()
 }
 
+fn find_legacy_match(
+    legacy_events: &[OwnedGoogleEvent],
+    used_existing_ids: &HashSet<String>,
+    desired: &DesiredHubEvent,
+) -> Option<usize> {
+    let matches = legacy_events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            !used_existing_ids.contains(&event.id)
+                && event.summary == desired.summary
+                && event.kind == timing_kind(&desired.timing)
+                && event.timing == desired.timing
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn timing_kind(timing: &NormalizedTiming) -> &'static str {
+    match timing {
+        NormalizedTiming::Timed { .. } => "timed",
+        NormalizedTiming::AllDay { .. } => "all-day",
+    }
+}
+
 #[derive(Debug)]
 struct OwnedGoogleEvent {
     id: String,
     summary: String,
-    source_id: String,
+    canonical_event_key: Option<String>,
     fingerprint: String,
-    attendees: Vec<String>,
     timing: NormalizedTiming,
+    kind: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,7 +433,6 @@ struct GoogleEventItem {
     summary: Option<String>,
     start: GoogleEventDateTime,
     end: GoogleEventDateTime,
-    attendees: Option<Vec<GoogleEventAttendee>>,
     #[serde(rename = "extendedProperties")]
     extended_properties: Option<GoogleExtendedProperties>,
 }
@@ -405,7 +449,8 @@ struct GoogleEventPayload {
     transparency: Option<String>,
     start: GoogleEventDateTime,
     end: GoogleEventDateTime,
-    attendees: Vec<GoogleEventAttendee>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attendees: Option<Vec<GoogleEventAttendee>>,
     #[serde(rename = "extendedProperties")]
     extended_properties: GoogleExtendedPropertiesPayload,
 }
@@ -428,4 +473,93 @@ struct GoogleEventDateTime {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct GoogleEventAttendee {
     email: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OwnedGoogleEvent, find_legacy_match};
+    use crate::calendar::domain::{DesiredHubEvent, NormalizedTiming};
+    use chrono::{NaiveDate, TimeZone, Utc};
+    use std::collections::HashSet;
+
+    #[test]
+    fn legacy_match_requires_unique_exact_summary_and_timing_match() {
+        let desired = DesiredHubEvent::new(
+            "uid-1".into(),
+            "globant".into(),
+            NormalizedTiming::Timed {
+                start: Utc.with_ymd_and_hms(2026, 3, 20, 15, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 20, 16, 0, 0).unwrap(),
+            },
+            "Busy - Globant".into(),
+            "business".into(),
+            vec!["carlos@personal.com".into()],
+            vec!["carlos@globant.com".into()],
+            false,
+        );
+
+        let legacy_events = vec![OwnedGoogleEvent {
+            id: "legacy-1".into(),
+            summary: "Busy - Globant".into(),
+            canonical_event_key: None,
+            fingerprint: String::new(),
+            timing: NormalizedTiming::Timed {
+                start: Utc.with_ymd_and_hms(2026, 3, 20, 15, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 20, 16, 0, 0).unwrap(),
+            },
+            kind: "timed",
+        }];
+
+        assert_eq!(
+            find_legacy_match(&legacy_events, &HashSet::new(), &desired),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn legacy_match_rejects_ambiguous_candidates() {
+        let desired = DesiredHubEvent::new(
+            "uid-1".into(),
+            "globant".into(),
+            NormalizedTiming::AllDay {
+                start_date: NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+                end_date_exclusive: NaiveDate::from_ymd_opt(2026, 3, 21).unwrap(),
+            },
+            "Busy - Globant".into(),
+            "business".into(),
+            vec!["carlos@personal.com".into()],
+            vec!["carlos@globant.com".into()],
+            false,
+        );
+
+        let legacy_events = vec![
+            OwnedGoogleEvent {
+                id: "legacy-1".into(),
+                summary: "Busy - Globant".into(),
+                canonical_event_key: None,
+                fingerprint: String::new(),
+                timing: NormalizedTiming::AllDay {
+                    start_date: NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+                    end_date_exclusive: NaiveDate::from_ymd_opt(2026, 3, 21).unwrap(),
+                },
+                kind: "all-day",
+            },
+            OwnedGoogleEvent {
+                id: "legacy-2".into(),
+                summary: "Busy - Globant".into(),
+                canonical_event_key: None,
+                fingerprint: String::new(),
+                timing: NormalizedTiming::AllDay {
+                    start_date: NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+                    end_date_exclusive: NaiveDate::from_ymd_opt(2026, 3, 21).unwrap(),
+                },
+                kind: "all-day",
+            },
+        ];
+
+        assert_eq!(
+            find_legacy_match(&legacy_events, &HashSet::new(), &desired),
+            None
+        );
+    }
 }

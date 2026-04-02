@@ -5,7 +5,7 @@ use chrono::{
 };
 use chrono_tz::Tz;
 use ical::parser::ical::IcalParser;
-use ical::parser::ical::component::IcalEvent;
+use ical::parser::ical::component::{IcalCalendar, IcalEvent};
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -51,8 +51,15 @@ impl IcsFetcher {
         while let Some(calendar) = parsed.next() {
             let calendar = calendar
                 .map_err(|e| format!("Failed to parse ICS source '{}': {}", source.id, e))?;
+            let calendar_timezone = calendar_timezone(&calendar);
             for event in calendar.events {
-                normalized.extend(expand_event(source, &event, window_start, window_end)?);
+                normalized.extend(expand_event(
+                    source,
+                    &event,
+                    window_start,
+                    window_end,
+                    calendar_timezone,
+                )?);
             }
         }
 
@@ -71,17 +78,19 @@ fn expand_event(
     event: &IcalEvent,
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
+    calendar_timezone: Option<Tz>,
 ) -> Result<Vec<NormalizedEvent>, String> {
     let Some(dtstart_property) = property(event, "DTSTART") else {
         return Ok(Vec::new());
     };
 
+    let event_uid = property_value(event, "UID").unwrap_or_else(|| source.id.clone());
     let recurrence_id = property_value(event, "RECURRENCE-ID");
     let rrule = property_value(event, "RRULE");
-    let exdates = parse_exdates(event, dtstart_property)?;
-    let start = parse_property_time(dtstart_property)?;
+    let exdates = parse_exdates(event, dtstart_property, calendar_timezone)?;
+    let start = parse_property_time(dtstart_property, calendar_timezone)?;
     let end = match property(event, "DTEND") {
-        Some(property) => parse_property_time(property)?,
+        Some(property) => parse_property_time(property, calendar_timezone)?,
         None => default_end_from_start(&start)?,
     };
 
@@ -132,8 +141,10 @@ fn expand_event(
         .into_iter()
         .filter(|timing| timing.intersects_window(window_start, window_end))
         .map(|timing| {
+            let source_event_key = source_event_key(&event_uid, recurrence_id.as_deref());
             NormalizedEvent::new(
                 source.id.clone(),
+                source_event_key,
                 source.label.clone(),
                 source.priority,
                 source.category.clone(),
@@ -142,6 +153,17 @@ fn expand_event(
             )
         })
         .collect())
+}
+
+fn source_event_key(uid: &str, recurrence_id: Option<&str>) -> String {
+    let uid = uid.trim();
+    match recurrence_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(recurrence_id) => format!("{}::{}", uid, recurrence_id),
+        None => uid.to_string(),
+    }
 }
 
 fn expand_rrule(
@@ -404,6 +426,7 @@ fn property_value(event: &IcalEvent, name: &str) -> Option<String> {
 fn parse_exdates(
     event: &IcalEvent,
     dtstart_property: &ical::property::Property,
+    calendar_timezone: Option<Tz>,
 ) -> Result<HashSet<String>, String> {
     let mut values = HashSet::new();
     for property in event
@@ -412,7 +435,7 @@ fn parse_exdates(
         .filter(|property| property.name.eq_ignore_ascii_case("EXDATE"))
     {
         for raw in property.value.clone().unwrap_or_default().split(',') {
-            match parse_property_time_with_override(dtstart_property, raw)? {
+            match parse_property_time_with_override(dtstart_property, raw, calendar_timezone)? {
                 ParsedTime::Timed(dt) => {
                     values.insert(dt.to_rfc3339());
                 }
@@ -435,13 +458,21 @@ fn default_end_from_start(start: &ParsedTime) -> Result<ParsedTime, String> {
     }
 }
 
-fn parse_property_time(property: &ical::property::Property) -> Result<ParsedTime, String> {
-    parse_property_time_with_override(property, property.value.as_deref().unwrap_or_default())
+fn parse_property_time(
+    property: &ical::property::Property,
+    calendar_timezone: Option<Tz>,
+) -> Result<ParsedTime, String> {
+    parse_property_time_with_override(
+        property,
+        property.value.as_deref().unwrap_or_default(),
+        calendar_timezone,
+    )
 }
 
 fn parse_property_time_with_override(
     property: &ical::property::Property,
     raw: &str,
+    calendar_timezone: Option<Tz>,
 ) -> Result<ParsedTime, String> {
     let value_type = property_param(property, "VALUE");
     let tzid = property_param(property, "TZID");
@@ -477,6 +508,15 @@ fn parse_property_time_with_override(
         );
     }
 
+    if let Some(timezone) = calendar_timezone {
+        let localized = timezone
+            .from_local_datetime(&naive)
+            .single()
+            .or_else(|| timezone.from_local_datetime(&naive).earliest())
+            .ok_or_else(|| "Ambiguous ICS floating timestamp in calendar timezone".to_string())?;
+        return Ok(ParsedTime::Timed(localized.with_timezone(&Utc)));
+    }
+
     Ok(ParsedTime::Timed(naive.and_utc()))
 }
 
@@ -492,11 +532,35 @@ fn property_param(property: &ical::property::Property, key: &str) -> Option<Stri
     })
 }
 
+fn calendar_timezone(calendar: &IcalCalendar) -> Option<Tz> {
+    property_value_from_properties(&calendar.properties, "X-WR-TIMEZONE")
+        .and_then(|value| parse_timezone(&value))
+        .or_else(|| {
+            calendar.timezones.iter().find_map(|timezone| {
+                property_value_from_properties(&timezone.properties, "TZID")
+                    .and_then(|value| parse_timezone(&value))
+            })
+        })
+}
+
+fn property_value_from_properties(
+    properties: &[ical::property::Property],
+    name: &str,
+) -> Option<String> {
+    properties
+        .iter()
+        .find(|property| property.name.eq_ignore_ascii_case(name))
+        .and_then(|property| property.value.clone())
+}
+
 fn parse_timezone(tzid: &str) -> Option<Tz> {
     Tz::from_str(tzid).ok().or_else(|| match tzid {
         "Central Standard Time" => Some(chrono_tz::America::Mexico_City),
+        "Central Standard Time (Mexico)" => Some(chrono_tz::America::Mexico_City),
         "Eastern Standard Time" => Some(chrono_tz::America::New_York),
         "Pacific Standard Time" => Some(chrono_tz::America::Los_Angeles),
+        "SA Pacific Standard Time" => Some(chrono_tz::America::Bogota),
+        "Argentina Standard Time" => Some(chrono_tz::America::Argentina::Buenos_Aires),
         _ => None,
     })
 }
@@ -607,7 +671,10 @@ enum ParsedTime {
 
 #[cfg(test)]
 mod tests {
-    use super::{ParsedTime, parse_property_time_with_override};
+    use super::{
+        ParsedTime, calendar_timezone, parse_property_time_with_override, source_event_key,
+    };
+    use ical::parser::ical::component::IcalCalendar;
 
     #[test]
     fn parses_utc_ics_timestamp_with_z_suffix() {
@@ -617,7 +684,7 @@ mod tests {
             value: Some("20260204T190000Z".to_string()),
         };
 
-        let parsed = parse_property_time_with_override(&property, "20260204T190000Z")
+        let parsed = parse_property_time_with_override(&property, "20260204T190000Z", None)
             .expect("valid utc timestamp");
 
         match parsed {
@@ -626,5 +693,80 @@ mod tests {
             }
             ParsedTime::AllDay(_) => panic!("expected timed value"),
         }
+    }
+
+    #[test]
+    fn parses_floating_timestamp_using_calendar_timezone() {
+        let property = ical::property::Property {
+            name: "DTSTART".to_string(),
+            params: None,
+            value: Some("20260204T190000".to_string()),
+        };
+
+        let parsed = parse_property_time_with_override(
+            &property,
+            "20260204T190000",
+            Some(chrono_tz::America::Mexico_City),
+        )
+        .expect("valid floating timestamp");
+
+        match parsed {
+            ParsedTime::Timed(dt) => {
+                assert_eq!(dt.to_rfc3339(), "2026-02-05T01:00:00+00:00");
+            }
+            ParsedTime::AllDay(_) => panic!("expected timed value"),
+        }
+    }
+
+    #[test]
+    fn reads_calendar_timezone_from_x_wr_timezone() {
+        let calendar = IcalCalendar {
+            properties: vec![ical::property::Property {
+                name: "X-WR-TIMEZONE".to_string(),
+                params: None,
+                value: Some("Central Standard Time".to_string()),
+            }],
+            ..IcalCalendar::default()
+        };
+
+        assert_eq!(
+            calendar_timezone(&calendar),
+            Some(chrono_tz::America::Mexico_City)
+        );
+    }
+
+    #[test]
+    fn parses_outlook_mexico_tzid() {
+        let property = ical::property::Property {
+            name: "DTSTART".to_string(),
+            params: Some(vec![(
+                "TZID".to_string(),
+                vec!["Central Standard Time (Mexico)".to_string()],
+            )]),
+            value: Some("20260326T090000".to_string()),
+        };
+
+        let parsed = parse_property_time_with_override(&property, "20260326T090000", None)
+            .expect("valid outlook mexico timestamp");
+
+        match parsed {
+            ParsedTime::Timed(dt) => {
+                assert_eq!(dt.to_rfc3339(), "2026-03-26T15:00:00+00:00");
+            }
+            ParsedTime::AllDay(_) => panic!("expected timed value"),
+        }
+    }
+
+    #[test]
+    fn canonical_key_uses_uid_without_timing_for_simple_events() {
+        assert_eq!(source_event_key("uid-123", None), "uid-123");
+    }
+
+    #[test]
+    fn canonical_key_uses_uid_and_recurrence_id_for_occurrences() {
+        assert_eq!(
+            source_event_key("uid-123", Some("20260326T090000Z")),
+            "uid-123::20260326T090000Z"
+        );
     }
 }

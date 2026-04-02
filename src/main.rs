@@ -9,10 +9,11 @@ mod web;
 
 use crate::agent::NoxAgent;
 use crate::calendar::format::{format_calendar_sync_cli, format_calendar_sync_dry_run_cli};
+use crate::calendar::google_auth::bootstrap_google_oauth;
 use crate::calendar::heartbeat::CalendarHeartbeat;
 use crate::calendar::service::CalendarSyncService;
 use crate::channels::telegram::TelegramChannel;
-use crate::config::{AppConfig, WebConfig};
+use crate::config::{AppConfig, GoogleOAuthBootstrapConfig, WebConfig};
 use crate::runs::RunTracker;
 use dotenv::dotenv;
 use std::env;
@@ -26,6 +27,28 @@ async fn main() {
     let cli_args = env::args().skip(1).collect::<Vec<_>>();
     let arch = env::consts::ARCH;
     log::info!("NOX running on architecture: {}", arch);
+
+    if matches!(cli_args.as_slice(), [command] if command == "google-auth") {
+        let config = GoogleOAuthBootstrapConfig::from_env().unwrap_or_else(|err| {
+            panic!(
+                "Failed to load Google OAuth bootstrap configuration: {}",
+                err
+            );
+        });
+        match bootstrap_google_oauth(&config, 90).await {
+            Ok(result) => {
+                println!(
+                    "google-auth complete\nsaved_token_path={}",
+                    result.token_path
+                );
+                return;
+            }
+            Err(err) => {
+                eprintln!("google-auth failed: {}", err);
+                std::process::exit(1);
+            }
+        }
+    }
 
     let web_config = WebConfig::from_env();
     let runtime_config = AppConfig::from_env();
@@ -100,10 +123,16 @@ async fn main() {
             config.clone(),
             TelegramChannel::new(&config, run_tracker.clone()),
         )
-        .unwrap_or_else(|e| panic!("Failed to initialize calendar heartbeat: {}", e));
-        tokio::spawn(async move {
-            heartbeat.run().await;
-        });
+        .map_err(|e| {
+            log::warn!("Calendar heartbeat disabled: {}", e);
+            e
+        })
+        .ok();
+        if let Some(heartbeat) = heartbeat {
+            tokio::spawn(async move {
+                heartbeat.run().await;
+            });
+        }
     } else {
         log::warn!(
             "Calendar sync disabled: no enabled sources found. Check CALENDAR_SOURCES_JSON; multiline .env JSON may not load as expected."
@@ -164,7 +193,9 @@ async fn handle_cli_command(config: &AppConfig, args: &[String]) -> bool {
             }
         }
         _ => {
-            eprintln!("unknown command. supported: `calendar-sync`, `calendar-sync --dry-run`");
+            eprintln!(
+                "unknown command. supported: `calendar-sync`, `calendar-sync --dry-run`, `google-auth`"
+            );
             std::process::exit(2);
         }
     }

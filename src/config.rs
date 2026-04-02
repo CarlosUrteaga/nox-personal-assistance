@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +38,8 @@ pub struct AppConfig {
     pub calendar_sources: Vec<CalendarSourceConfig>,
     pub destination_calendar_id: Option<String>,
     pub calendar_destination_provider: Option<String>,
+    pub google_oauth_credentials_path: Option<String>,
+    pub google_oauth_token_path: Option<String>,
     pub google_calendar_access_token: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub heartbeat_sync_window_days: i64,
@@ -48,6 +51,12 @@ pub struct WebConfig {
     pub enabled: bool,
     pub bind_address: String,
     pub user_store_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoogleOAuthBootstrapConfig {
+    pub credentials_path: String,
+    pub token_path: String,
 }
 
 impl AppConfig {
@@ -92,6 +101,20 @@ impl AppConfig {
             .or_else(|| read_dotenv_value("CALENDAR_DESTINATION_PROVIDER"))
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty());
+        let google_oauth_credentials_path = env::var("GOOGLE_OAUTH_CREDENTIALS_PATH")
+            .ok()
+            .or_else(|| read_dotenv_value("GOOGLE_OAUTH_CREDENTIALS_PATH"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let google_oauth_token_path = env::var("GOOGLE_OAUTH_TOKEN_PATH")
+            .ok()
+            .or_else(|| read_dotenv_value("GOOGLE_OAUTH_TOKEN_PATH"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let resolved_google_oauth_token_path = resolve_google_oauth_token_path(
+            google_oauth_credentials_path.as_deref(),
+            google_oauth_token_path.as_deref(),
+        );
         let google_calendar_access_token = env::var("GOOGLE_CALENDAR_ACCESS_TOKEN")
             .ok()
             .or_else(|| read_dotenv_value("GOOGLE_CALENDAR_ACCESS_TOKEN"))
@@ -115,9 +138,12 @@ impl AppConfig {
                     "DESTINATION_CALENDAR_ID must be set when calendar sync is enabled".to_string(),
                 );
             }
-            if google_calendar_access_token.is_none() {
+            if resolved_google_oauth_token_path.is_none()
+                && google_oauth_credentials_path.is_none()
+                && google_calendar_access_token.is_none()
+            {
                 return Err(
-                    "GOOGLE_CALENDAR_ACCESS_TOKEN must be set when calendar sync is enabled"
+                    "GOOGLE_OAUTH_TOKEN_PATH, GOOGLE_OAUTH_CREDENTIALS_PATH, or GOOGLE_CALENDAR_ACCESS_TOKEN must be set when calendar sync is enabled"
                         .to_string(),
                 );
             }
@@ -142,6 +168,8 @@ impl AppConfig {
             calendar_sources,
             destination_calendar_id,
             calendar_destination_provider,
+            google_oauth_credentials_path,
+            google_oauth_token_path: resolved_google_oauth_token_path,
             google_calendar_access_token,
             heartbeat_interval_secs,
             heartbeat_sync_window_days,
@@ -181,6 +209,52 @@ impl WebConfig {
             user_store_path,
         }
     }
+}
+
+impl GoogleOAuthBootstrapConfig {
+    pub fn from_env() -> Result<Self, String> {
+        let credentials_path = env::var("GOOGLE_OAUTH_CREDENTIALS_PATH")
+            .ok()
+            .or_else(|| read_dotenv_value("GOOGLE_OAUTH_CREDENTIALS_PATH"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "GOOGLE_OAUTH_CREDENTIALS_PATH must be set".to_string())?;
+        let token_path = resolve_google_oauth_token_path_from_env(&credentials_path)
+            .ok_or_else(|| "GOOGLE_OAUTH_TOKEN_PATH could not be resolved".to_string())?;
+
+        Ok(Self {
+            credentials_path,
+            token_path,
+        })
+    }
+}
+
+pub fn resolve_google_oauth_token_path(
+    credentials_path: Option<&str>,
+    token_path: Option<&str>,
+) -> Option<String> {
+    token_path
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .or_else(|| {
+            credentials_path
+                .filter(|value| !value.trim().is_empty())
+                .map(derive_google_oauth_token_path)
+        })
+}
+
+fn resolve_google_oauth_token_path_from_env(credentials_path: &str) -> Option<String> {
+    let token_path = env::var("GOOGLE_OAUTH_TOKEN_PATH")
+        .ok()
+        .or_else(|| read_dotenv_value("GOOGLE_OAUTH_TOKEN_PATH"));
+    resolve_google_oauth_token_path(Some(credentials_path), token_path.as_deref())
+}
+
+fn derive_google_oauth_token_path(credentials_path: &str) -> String {
+    Path::new(credentials_path)
+        .with_file_name("token.json")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_calendar_sources() -> Result<Vec<CalendarSourceConfig>, String> {
@@ -370,7 +444,10 @@ fn format_dotenv_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, WebConfig, read_dotenv_map, write_dotenv_values};
+    use super::{
+        AppConfig, GoogleOAuthBootstrapConfig, WebConfig, read_dotenv_map,
+        resolve_google_oauth_token_path, write_dotenv_values,
+    };
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -391,9 +468,11 @@ mod tests {
             env::remove_var("SYSTEM_PROMPT");
             env::remove_var("MAX_HISTORY_MESSAGES");
             env::set_var("CALENDAR_SOURCES_JSON", "");
-            env::remove_var("DESTINATION_CALENDAR_ID");
-            env::remove_var("CALENDAR_DESTINATION_PROVIDER");
-            env::remove_var("GOOGLE_CALENDAR_ACCESS_TOKEN");
+            env::set_var("DESTINATION_CALENDAR_ID", "");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "");
+            env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "");
             env::set_var("CALENDAR_TARGET_EMAILS", "");
         }
 
@@ -415,9 +494,11 @@ mod tests {
             env::set_var("TELOXIDE_TOKEN", "token");
             env::set_var("CHAT_ID", "bad");
             env::set_var("CALENDAR_SOURCES_JSON", "");
-            env::remove_var("DESTINATION_CALENDAR_ID");
-            env::remove_var("CALENDAR_DESTINATION_PROVIDER");
-            env::remove_var("GOOGLE_CALENDAR_ACCESS_TOKEN");
+            env::set_var("DESTINATION_CALENDAR_ID", "");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "");
+            env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "");
             env::set_var("CALENDAR_TARGET_EMAILS", "");
         }
 
@@ -437,6 +518,8 @@ mod tests {
             );
             env::set_var("DESTINATION_CALENDAR_ID", "primary");
             env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "");
             env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "secret");
             env::set_var(
                 "CALENDAR_TARGET_EMAILS",
@@ -458,10 +541,11 @@ mod tests {
         unsafe {
             env::set_var("TELOXIDE_TOKEN", "token");
             env::set_var("CHAT_ID", "1");
-            env::set_var("CALENDAR_SOURCES_JSON", "");
             env::remove_var("CALENDAR_SOURCES_JSON");
             env::set_var("DESTINATION_CALENDAR_ID", "primary");
             env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "");
             env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "secret");
             env::set_var(
                 "CALENDAR_TARGET_EMAILS",
@@ -499,6 +583,8 @@ mod tests {
             );
             env::set_var("DESTINATION_CALENDAR_ID", "primary");
             env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "");
             env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "secret");
             env::set_var(
                 "CALENDAR_TARGET_EMAILS",
@@ -508,6 +594,99 @@ mod tests {
 
         let err = AppConfig::from_env().unwrap_err();
         assert!(err.contains("Duplicate calendar source id"));
+    }
+
+    #[test]
+    fn config_accepts_google_oauth_token_path_without_manual_access_token() {
+        let _guard = env_lock().lock().expect("env lock");
+        unsafe {
+            env::set_var("TELOXIDE_TOKEN", "token");
+            env::set_var("CHAT_ID", "1");
+            env::set_var(
+                "CALENDAR_SOURCES_JSON",
+                r#"[{"id":"client","type":"ics","url":"https://example.test/client.ics","label":"Busy - Client","priority":100,"category":"business","enabled":true,"owner_email":"client@example.test"}]"#,
+            );
+            env::set_var("DESTINATION_CALENDAR_ID", "primary");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "/tmp/token.json");
+            env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "");
+            env::set_var(
+                "CALENDAR_TARGET_EMAILS",
+                r#"["client@example.test","personal@example.test"]"#,
+            );
+        }
+
+        let config = AppConfig::from_env().expect("config");
+
+        assert_eq!(
+            config.google_oauth_token_path.as_deref(),
+            Some("/tmp/token.json")
+        );
+        assert!(config.calendar_sync_enabled());
+    }
+
+    #[test]
+    fn config_accepts_google_oauth_credentials_path_without_token_file() {
+        let _guard = env_lock().lock().expect("env lock");
+        unsafe {
+            env::set_var("TELOXIDE_TOKEN", "token");
+            env::set_var("CHAT_ID", "1");
+            env::set_var(
+                "CALENDAR_SOURCES_JSON",
+                r#"[{"id":"client","type":"ics","url":"https://example.test/client.ics","label":"Busy - Client","priority":100,"category":"business","enabled":true,"owner_email":"client@example.test"}]"#,
+            );
+            env::set_var("DESTINATION_CALENDAR_ID", "primary");
+            env::set_var("CALENDAR_DESTINATION_PROVIDER", "google");
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "/tmp/credentials.json");
+            env::set_var("GOOGLE_OAUTH_TOKEN_PATH", "");
+            env::set_var("GOOGLE_CALENDAR_ACCESS_TOKEN", "");
+            env::set_var(
+                "CALENDAR_TARGET_EMAILS",
+                r#"["client@example.test","personal@example.test"]"#,
+            );
+        }
+
+        let config = AppConfig::from_env().expect("config");
+
+        assert_eq!(
+            config.google_oauth_credentials_path.as_deref(),
+            Some("/tmp/credentials.json")
+        );
+        assert_eq!(
+            config.google_oauth_token_path.as_deref(),
+            Some("/tmp/token.json")
+        );
+        assert!(config.calendar_sync_enabled());
+    }
+
+    #[test]
+    fn google_oauth_bootstrap_config_derives_token_path_when_missing() {
+        let _guard = env_lock().lock().expect("env lock");
+        unsafe {
+            env::set_var("GOOGLE_OAUTH_CREDENTIALS_PATH", "/tmp/credentials.json");
+            env::remove_var("GOOGLE_OAUTH_TOKEN_PATH");
+        }
+
+        let config = GoogleOAuthBootstrapConfig::from_env().expect("bootstrap config");
+
+        assert_eq!(
+            config,
+            GoogleOAuthBootstrapConfig {
+                credentials_path: "/tmp/credentials.json".to_string(),
+                token_path: "/tmp/token.json".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_google_oauth_token_path_overrides_derived_default() {
+        let resolved = resolve_google_oauth_token_path(
+            Some("/tmp/credentials.json"),
+            Some("/custom/path/google.json"),
+        );
+
+        assert_eq!(resolved.as_deref(), Some("/custom/path/google.json"));
     }
 
     #[test]
