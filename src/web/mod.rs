@@ -240,6 +240,97 @@ const SETTING_FIELDS: &[SettingField] = &[
         multiline: false,
     },
     SettingField {
+        key: "NEWS_BRIEF_ENABLED",
+        label: "News Brief Enabled",
+        help: "true or false. Enables the scheduled AI agents / LLMOps / RAG brief.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_TIMEZONE",
+        label: "News Brief Timezone",
+        help: "IANA timezone used by the scheduler, for example America/Mexico_City.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_SCHEDULE_JSON",
+        label: "News Brief Schedule JSON",
+        help: "JSON array of HH:MM schedule slots.",
+        secret: false,
+        multiline: true,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_MAX_ITEMS",
+        label: "News Brief Max Items",
+        help: "Maximum stories sent per scheduled brief.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_MIN_ITEMS",
+        label: "News Brief Min Items",
+        help: "Minimum qualifying stories required before sending.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_MIN_AVG_SCORE",
+        label: "News Brief Min Avg Score",
+        help: "Delivery eligibility threshold between 0.0 and 1.0.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_LOOKBACK_HOURS",
+        label: "News Brief Lookback Hours",
+        help: "Maximum recency window considered by the scorer.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_FETCH_COOLDOWN_MINUTES",
+        label: "News Brief Fetch Cooldown Minutes",
+        help: "Cooldown for repeated feed fetches during scheduler polling.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_MAX_SUMMARY_CHARS",
+        label: "News Brief Max Summary Chars",
+        help: "Maximum summary length for each Telegram item.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_STORE_PATH",
+        label: "News Brief Store Path",
+        help: "Local JSON state file for prepared artifacts and source health.",
+        secret: false,
+        multiline: false,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_SOURCES_JSON",
+        label: "News Brief Sources JSON",
+        help: "JSON array of RSS sources with weights and kinds.",
+        secret: false,
+        multiline: true,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_ENABLED_TOPICS_JSON",
+        label: "News Brief Enabled Topics JSON",
+        help: "JSON array of enabled topic buckets such as agents, llmops, and rag.",
+        secret: false,
+        multiline: true,
+    },
+    SettingField {
+        key: "NEWS_BRIEF_NEGATIVE_KEYWORDS_JSON",
+        label: "News Brief Negative Keywords JSON",
+        help: "JSON array of negative keywords used to suppress noise.",
+        secret: false,
+        multiline: true,
+    },
+    SettingField {
         key: "CALENDAR_DESTINATION_PROVIDER",
         label: "Calendar Destination Provider",
         help: "Currently google.",
@@ -897,7 +988,10 @@ fn normalize_setting(field: &SettingField, raw_value: &str) -> Result<String, St
                 .parse::<i64>()
                 .map_err(|_| "CHAT_ID must be an integer.".to_string())?;
         }
-        "OLLAMA_TIMEOUT_SECS" | "HEARTBEAT_INTERVAL_SECS" if !trimmed.is_empty() => {
+        "OLLAMA_TIMEOUT_SECS"
+        | "HEARTBEAT_INTERVAL_SECS"
+        | "NEWS_BRIEF_LOOKBACK_HOURS"
+        | "NEWS_BRIEF_FETCH_COOLDOWN_MINUTES" if !trimmed.is_empty() => {
             trimmed
                 .parse::<u64>()
                 .map_err(|_| format!("{} must be an unsigned integer.", field.key))?;
@@ -907,26 +1001,42 @@ fn normalize_setting(field: &SettingField, raw_value: &str) -> Result<String, St
                 .parse::<u32>()
                 .map_err(|_| "OLLAMA_NUM_PREDICT must be an unsigned integer.".to_string())?;
         }
-        "MAX_HISTORY_MESSAGES" if !trimmed.is_empty() => {
+        "MAX_HISTORY_MESSAGES"
+        | "NEWS_BRIEF_MAX_ITEMS"
+        | "NEWS_BRIEF_MIN_ITEMS"
+        | "NEWS_BRIEF_MAX_SUMMARY_CHARS" if !trimmed.is_empty() => {
             trimmed
                 .parse::<usize>()
-                .map_err(|_| "MAX_HISTORY_MESSAGES must be an unsigned integer.".to_string())?;
+                .map_err(|_| format!("{} must be an unsigned integer.", field.key))?;
         }
         "HEARTBEAT_SYNC_WINDOW_DAYS" if !trimmed.is_empty() => {
             trimmed
                 .parse::<i64>()
                 .map_err(|_| "HEARTBEAT_SYNC_WINDOW_DAYS must be an integer.".to_string())?;
         }
-        "CALENDAR_TARGET_EMAILS" | "CALENDAR_SOURCES_JSON" if !trimmed.is_empty() => {
+        "NEWS_BRIEF_MIN_AVG_SCORE" if !trimmed.is_empty() => {
+            let value = trimmed
+                .parse::<f64>()
+                .map_err(|_| "NEWS_BRIEF_MIN_AVG_SCORE must be a number between 0.0 and 1.0.".to_string())?;
+            if !(0.0..=1.0).contains(&value) {
+                return Err("NEWS_BRIEF_MIN_AVG_SCORE must be a number between 0.0 and 1.0.".to_string());
+            }
+        }
+        "CALENDAR_TARGET_EMAILS"
+        | "CALENDAR_SOURCES_JSON"
+        | "NEWS_BRIEF_SCHEDULE_JSON"
+        | "NEWS_BRIEF_SOURCES_JSON"
+        | "NEWS_BRIEF_ENABLED_TOPICS_JSON"
+        | "NEWS_BRIEF_NEGATIVE_KEYWORDS_JSON" if !trimmed.is_empty() => {
             let parsed: serde_json::Value = serde_json::from_str(trimmed)
                 .map_err(|err| format!("{} must be valid JSON: {}", field.key, err))?;
             return Ok(parsed.to_string());
         }
-        "WEB_ENABLED" if !trimmed.is_empty() => {
+        "WEB_ENABLED" | "NEWS_BRIEF_ENABLED" if !trimmed.is_empty() => {
             let normalized = match trimmed.to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => "true",
                 "0" | "false" | "no" | "off" => "false",
-                _ => return Err("WEB_ENABLED must be true or false.".to_string()),
+                _ => return Err(format!("{} must be true or false.", field.key)),
             };
             return Ok(normalized.to_string());
         }

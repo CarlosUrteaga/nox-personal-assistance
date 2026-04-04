@@ -1,3 +1,4 @@
+use crate::tools::news_filter::TopicBucket;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::env;
@@ -23,6 +24,44 @@ pub struct CalendarSourceConfig {
     pub owner_email: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NewsSourceType {
+    Rss,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NewsSourceKind {
+    Reporting,
+    Analysis,
+    Newsletter,
+    Research,
+}
+
+impl NewsSourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reporting => "reporting",
+            Self::Analysis => "analysis",
+            Self::Newsletter => "newsletter",
+            Self::Research => "research",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct NewsSourceConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub source_type: NewsSourceType,
+    pub url: String,
+    pub enabled: bool,
+    pub source_weight: f64,
+    pub source_kind: NewsSourceKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub teloxide_token: String,
@@ -44,6 +83,19 @@ pub struct AppConfig {
     pub heartbeat_interval_secs: u64,
     pub heartbeat_sync_window_days: i64,
     pub calendar_target_emails: Vec<String>,
+    pub news_brief_enabled: bool,
+    pub news_brief_timezone: String,
+    pub news_brief_schedule: Vec<String>,
+    pub news_brief_max_items: usize,
+    pub news_brief_min_items: usize,
+    pub news_brief_min_avg_score: f64,
+    pub news_brief_lookback_hours: u64,
+    pub news_brief_fetch_cooldown_minutes: u64,
+    pub news_brief_max_summary_chars: usize,
+    pub news_brief_store_path: String,
+    pub news_brief_sources: Vec<NewsSourceConfig>,
+    pub news_brief_enabled_topics: Vec<TopicBucket>,
+    pub news_brief_negative_keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +183,58 @@ impl AppConfig {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(14);
         let calendar_target_emails = parse_calendar_target_emails()?;
+        let news_brief_enabled = env::var("NEWS_BRIEF_ENABLED")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_ENABLED"))
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let news_brief_timezone = env::var("NEWS_BRIEF_TIMEZONE")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_TIMEZONE"))
+            .unwrap_or_else(|| "America/Mexico_City".to_string());
+        let news_brief_schedule = parse_news_brief_schedule()?;
+        let news_brief_max_items = env::var("NEWS_BRIEF_MAX_ITEMS")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_MAX_ITEMS"))
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(3);
+        let news_brief_min_items = env::var("NEWS_BRIEF_MIN_ITEMS")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_MIN_ITEMS"))
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(2);
+        let news_brief_min_avg_score = env::var("NEWS_BRIEF_MIN_AVG_SCORE")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_MIN_AVG_SCORE"))
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(0.62);
+        let news_brief_lookback_hours = env::var("NEWS_BRIEF_LOOKBACK_HOURS")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_LOOKBACK_HOURS"))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(24);
+        let news_brief_fetch_cooldown_minutes = env::var("NEWS_BRIEF_FETCH_COOLDOWN_MINUTES")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_FETCH_COOLDOWN_MINUTES"))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(20);
+        let news_brief_max_summary_chars = env::var("NEWS_BRIEF_MAX_SUMMARY_CHARS")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_MAX_SUMMARY_CHARS"))
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(180);
+        let news_brief_store_path = env::var("NEWS_BRIEF_STORE_PATH")
+            .ok()
+            .or_else(|| read_dotenv_value("NEWS_BRIEF_STORE_PATH"))
+            .unwrap_or_else(|| "data/news_brief_state.json".to_string());
+        let news_brief_sources = parse_news_brief_sources()?;
+        let news_brief_enabled_topics = parse_news_brief_topics()?;
+        let news_brief_negative_keywords = parse_news_brief_negative_keywords()?;
 
         if !calendar_sources.is_empty() {
             if destination_calendar_id.is_none() {
@@ -174,6 +278,19 @@ impl AppConfig {
             heartbeat_interval_secs,
             heartbeat_sync_window_days,
             calendar_target_emails,
+            news_brief_enabled,
+            news_brief_timezone,
+            news_brief_schedule,
+            news_brief_max_items,
+            news_brief_min_items,
+            news_brief_min_avg_score,
+            news_brief_lookback_hours,
+            news_brief_fetch_cooldown_minutes,
+            news_brief_max_summary_chars,
+            news_brief_store_path,
+            news_brief_sources,
+            news_brief_enabled_topics,
+            news_brief_negative_keywords,
         })
     }
 
@@ -332,6 +449,94 @@ fn parse_calendar_target_emails() -> Result<Vec<String>, String> {
     Ok(normalized)
 }
 
+fn parse_news_brief_schedule() -> Result<Vec<String>, String> {
+    let raw = env::var("NEWS_BRIEF_SCHEDULE_JSON")
+        .ok()
+        .or_else(|| read_dotenv_value("NEWS_BRIEF_SCHEDULE_JSON"))
+        .unwrap_or_else(|| r#"["08:00","15:00","22:00"]"#.to_string());
+
+    let values: Vec<String> = serde_json::from_str(&raw)
+        .map_err(|err| format!("NEWS_BRIEF_SCHEDULE_JSON must be valid JSON: {}", err))?;
+    if values.is_empty() {
+        return Err("NEWS_BRIEF_SCHEDULE_JSON must contain at least one HH:MM time".to_string());
+    }
+    Ok(values)
+}
+
+fn parse_news_brief_sources() -> Result<Vec<NewsSourceConfig>, String> {
+    let raw = env::var("NEWS_BRIEF_SOURCES_JSON")
+        .ok()
+        .or_else(|| read_dotenv_value("NEWS_BRIEF_SOURCES_JSON"))
+        .unwrap_or_else(|| "[]".to_string());
+
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sources: Vec<NewsSourceConfig> = serde_json::from_str(&raw)
+        .map_err(|err| format!("NEWS_BRIEF_SOURCES_JSON must be valid JSON: {}", err))?;
+
+    let mut seen_ids = HashSet::new();
+    let mut enabled = Vec::new();
+    for source in sources {
+        if source.id.trim().is_empty() {
+            return Err("NEWS_BRIEF_SOURCES_JSON source id must not be empty".to_string());
+        }
+        if source.name.trim().is_empty() {
+            return Err(format!("News source '{}' name must not be empty", source.id));
+        }
+        if source.url.trim().is_empty() {
+            return Err(format!("News source '{}' url must not be empty", source.id));
+        }
+        if !(0.0..=1.0).contains(&source.source_weight) {
+            return Err(format!(
+                "News source '{}' source_weight must be between 0.0 and 1.0",
+                source.id
+            ));
+        }
+        if !seen_ids.insert(source.id.to_ascii_lowercase()) {
+            return Err(format!("Duplicate news source id '{}'", source.id));
+        }
+        if source.enabled {
+            enabled.push(source);
+        }
+    }
+    Ok(enabled)
+}
+
+fn parse_news_brief_topics() -> Result<Vec<TopicBucket>, String> {
+    let raw = env::var("NEWS_BRIEF_ENABLED_TOPICS_JSON")
+        .ok()
+        .or_else(|| read_dotenv_value("NEWS_BRIEF_ENABLED_TOPICS_JSON"))
+        .unwrap_or_else(|| r#"["agents","llmops","rag"]"#.to_string());
+
+    let values: Vec<String> = serde_json::from_str(&raw)
+        .map_err(|err| format!("NEWS_BRIEF_ENABLED_TOPICS_JSON must be valid JSON: {}", err))?;
+    let mut topics = Vec::new();
+    for value in values {
+        let topic = TopicBucket::from_config_value(&value)
+            .ok_or_else(|| format!("Unsupported news topic '{}'", value))?;
+        if !topics.contains(&topic) {
+            topics.push(topic);
+        }
+    }
+    Ok(topics)
+}
+
+fn parse_news_brief_negative_keywords() -> Result<Vec<String>, String> {
+    let raw = env::var("NEWS_BRIEF_NEGATIVE_KEYWORDS_JSON")
+        .ok()
+        .or_else(|| read_dotenv_value("NEWS_BRIEF_NEGATIVE_KEYWORDS_JSON"))
+        .unwrap_or_else(|| "[]".to_string());
+    let values: Vec<String> = serde_json::from_str(&raw)
+        .map_err(|err| format!("NEWS_BRIEF_NEGATIVE_KEYWORDS_JSON must be valid JSON: {}", err))?;
+    Ok(values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect())
+}
+
 fn read_dotenv_value(key: &str) -> Option<String> {
     let contents = fs::read_to_string(".env").ok()?;
     parse_dotenv_map(&contents).remove(key)
@@ -485,6 +690,13 @@ mod tests {
         assert_eq!(config.ollama_num_predict, 120);
         assert!(config.calendar_sources.is_empty());
         assert!(!config.calendar_sync_enabled());
+        assert!(!config.news_brief_enabled);
+        assert_eq!(config.news_brief_timezone, "America/Mexico_City");
+        assert_eq!(config.news_brief_schedule, vec!["08:00", "15:00", "22:00"]);
+        assert_eq!(config.news_brief_max_items, 3);
+        assert_eq!(config.news_brief_min_items, 2);
+        assert_eq!(config.news_brief_min_avg_score, 0.62);
+        assert!(config.news_brief_sources.is_empty());
     }
 
     #[test]

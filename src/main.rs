@@ -15,6 +15,7 @@ use crate::calendar::service::CalendarSyncService;
 use crate::channels::telegram::TelegramChannel;
 use crate::config::{AppConfig, GoogleOAuthBootstrapConfig, WebConfig};
 use crate::runs::RunTracker;
+use crate::tools::news_scheduler::NewsScheduler;
 use dotenv::dotenv;
 use std::env;
 use std::sync::Arc;
@@ -140,7 +141,22 @@ async fn main() {
     }
 
     // 3. Initialize Channel (Telegram)
-    let telegram_channel = TelegramChannel::new(&config, run_tracker);
+    let telegram_channel = TelegramChannel::new(&config, run_tracker.clone());
+
+    if config.news_brief_enabled {
+        match NewsScheduler::new(config.clone(), telegram_channel.clone(), run_tracker.clone()) {
+            Ok(news_scheduler) => {
+                tokio::spawn(async move {
+                    news_scheduler.run().await;
+                });
+            }
+            Err(err) => {
+                log::warn!("News brief scheduler disabled: {}", err);
+            }
+        }
+    } else {
+        log::info!("News brief scheduler disabled via NEWS_BRIEF_ENABLED=false");
+    }
 
     log::info!("NOX System Started. Listening for chat messages...");
 

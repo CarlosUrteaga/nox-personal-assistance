@@ -1,6 +1,6 @@
 # nox-personal-assistance
 
-Telegram-based personal assistant backed by Ollama, with a local web console, guided setup, and a privacy-first calendar heartbeat.
+Telegram-based personal assistant backed by Ollama, with a local web console, guided setup, a privacy-first calendar heartbeat, and a scheduled AI agents / LLMOps / RAG news brief.
 
 ## What it does
 
@@ -12,6 +12,7 @@ Telegram-based personal assistant backed by Ollama, with a local web console, gu
 - Supports `/start`, `/help`, `/reset`, `/todo <task>`, `/todos`, and `/done <id>`
 - Also handles common natural todo phrases before falling back to chat
 - Optionally polls multiple ICS/iCal feeds and writes only generic busy blockers into a destination Google Calendar
+- Optionally sends a scheduled AI agents / LLMOps / RAG RSS brief to Telegram at configured local-time windows
 
 ## Requirements
 
@@ -35,6 +36,19 @@ Copy `.env.example` to `.env` and set:
 - `SYSTEM_PROMPT`
 - `MAX_HISTORY_MESSAGES`
 - `TODO_STORE_PATH`
+- `NEWS_BRIEF_ENABLED`
+- `NEWS_BRIEF_TIMEZONE`
+- `NEWS_BRIEF_SCHEDULE_JSON`
+- `NEWS_BRIEF_MAX_ITEMS`
+- `NEWS_BRIEF_MIN_ITEMS`
+- `NEWS_BRIEF_MIN_AVG_SCORE`
+- `NEWS_BRIEF_LOOKBACK_HOURS`
+- `NEWS_BRIEF_FETCH_COOLDOWN_MINUTES`
+- `NEWS_BRIEF_MAX_SUMMARY_CHARS`
+- `NEWS_BRIEF_STORE_PATH`
+- `NEWS_BRIEF_SOURCES_JSON`
+- `NEWS_BRIEF_ENABLED_TOPICS_JSON`
+- `NEWS_BRIEF_NEGATIVE_KEYWORDS_JSON`
 - `WEB_ENABLED`
 - `WEB_BIND_ADDRESS`
 - `USER_STORE_PATH`
@@ -54,6 +68,13 @@ Calendar env notes:
 - `CALENDAR_SOURCES_JSON` must be a single-line JSON array in `.env`.
 - Each source should define `owner_email` so invitation routing can exclude the source owner automatically.
 - `GOOGLE_OAUTH_TOKEN_PATH` is optional. If omitted, NOX stores `token.json` next to `credentials.json`.
+
+News brief env notes:
+
+- `NEWS_BRIEF_SOURCES_JSON` must be a single-line JSON array in `.env`.
+- `NEWS_BRIEF_SCHEDULE_JSON` must be a JSON array of `HH:MM` local-time slots.
+- `NEWS_BRIEF_ENABLED_TOPICS_JSON` defaults to `agents`, `llmops`, and `rag`.
+- The scheduler sends at most one brief per configured window and stores state in `NEWS_BRIEF_STORE_PATH`.
 
 ## Run
 
